@@ -51,6 +51,7 @@
 #include "ofp-actions.h"
 #include "ofp-parse.h"
 #include "ofp-print.h"
+#include "ofproto-dpif-hsa.h"
 #include "ofproto-dpif-ipfix.h"
 #include "ofproto-dpif-mirror.h"
 #include "ofproto-dpif-monitor.h"
@@ -5137,6 +5138,8 @@ ofproto_unixctl_init(void)
 
     unixctl_command_register("ofproto/tnl-push-pop", "[on]|[off]", 1, 1,
                              disable_tnl_push_pop, NULL);
+
+    ofproto_dpif_hsa_init();
 }
 
 /* Returns true if 'table' is the table used for internal rules,

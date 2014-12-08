@@ -1,0 +1,80 @@
+# Assumptions
+# ===========
+#
+# 1. Architecture of having only one integration bridge and multiple pif
+#    bridges.  Flows are only installed on integration bridge.  pif bridges
+#    will use the default NORMAL flow.
+#
+# 2. Input packet will always have all-zero metadata, registers.
+#
+# 3. MPLS, IPv6 are not used.
+#
+# 4. Following OpenFlow actions are not supported:
+#
+#         OFPACT_CONTROLLER
+#         OFPACT_GROUP
+#         OFPACT_STACK_PUSH
+#         OFPACT_STACK_POP
+#         OFPACT_PUSH_MPLS
+#         OFPACT_POP_MPLS
+#         OFPACT_SET_MPLS_LABEL
+#         OFPACT_SET_MPLS_TC
+#         OFPACT_SET_MPLS_TTL
+#         OFPACT_DEC_MPLS_TTL
+#         OFPACT_DEC_TTL
+#         OFPACT_NOTE
+#         OFPACT_MULTIPATH
+#         OFPACT_LEARN
+#         OFPACT_CLEAR_ACTIONS
+#         OFPACT_EXIT
+#         OFPACT_WRITE_ACTIONS
+#         OFPACT_METER
+#         OFPACT_SAMPLE
+#         OFPACT_SET_QUEUE
+#         OFPACT_ENQUEUE
+#         OFPACT_POP_QUEUE
+#         OFPACT_WRITE_METADATA
+#         OFPACT_GOTO_TABLE
+#
+#
+
+
+# OpenFlow Header Space.
+struct of_hs {
+    struct list list_node;
+    struct match match_hs;          // Header space.
+    struct match match_flow;        // Input flow to be used for output.
+    struct flow_constraints;        // list of flow wildcards matched before.
+}
+
+# Operations.
+# 1. Check if 'struct of_hs' include the OF flow.
+# 2. Apply OF flow to hs => result in new fs.
+
+# Detailed design
+Given of_hs, and a OF flow of_flow to be applied and its wildcard of_wc,
+
+   For each flow in table,
+      Call flow_equal_except(of_hs->flow, of_flow, of_wc);
+            If equal, then
+               take the union of of_hs and of_flow,
+               apply the actions,
+               goto next table/check the output
+            Else, then
+               of_hs cannot go further in this of_flow path.
+               continue
+
+            Add the flow's matching field to of_hs's constraints, and goto next flow.
+               have FLOW_FIELDS lists for storing the constrains.
+
+      Apply action to the flow,
+            Apply action to flow, set corresponding actions, adjust the wc,
+            call the assigned fields should be un-wildcarded,
+
+            When encounter resubmit/goto table
+                 goto the table,
+                 check the match for each flow in the table,
+                 for each match'ed flow, store the flow+action result in
+                 a list and pass it upward,
+            When encounter output => record the hs to file,
+

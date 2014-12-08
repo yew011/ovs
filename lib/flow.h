@@ -322,9 +322,14 @@ struct flow_wildcards {
 };
 
 #define WC_MASK_FIELD(WC, FIELD) \
-    memset(&(WC)->masks.FIELD, 0xff, sizeof (WC)->masks.FIELD)
+    memset(&(WC)->masks.FIELD, 0xFF, sizeof (WC)->masks.FIELD)
 #define WC_UNMASK_FIELD(WC, FIELD) \
     memset(&(WC)->masks.FIELD, 0, sizeof (WC)->masks.FIELD)
+
+bool flow_wildcard_is_fully_masked(void *field, size_t len);
+bool flow_wildcard_is_fully_unmasked(void *field, size_t len);
+void flow_wildcard_apply(void *dst_flow, void *dst_wc, const void *src_flow,
+                         const void *src_wc, size_t size);
 
 void flow_wildcards_init_catchall(struct flow_wildcards *);
 

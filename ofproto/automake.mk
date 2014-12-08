@@ -28,6 +28,8 @@ ofproto_libofproto_la_SOURCES = \
 	ofproto/ofproto.h \
 	ofproto/ofproto-dpif.c \
 	ofproto/ofproto-dpif.h \
+	ofproto/ofproto-dpif-hsa.c \
+	ofproto/ofproto-dpif-hsa.h \
 	ofproto/ofproto-dpif-ipfix.c \
 	ofproto/ofproto-dpif-ipfix.h \
 	ofproto/ofproto-dpif-mirror.c \
