@@ -1006,7 +1006,13 @@ match_format(const struct match *match, struct ds *s, int priority)
     format_eth_masked(s, "dl_src", f->dl_src, wc->masks.dl_src);
     format_eth_masked(s, "dl_dst", f->dl_dst, wc->masks.dl_dst);
     if (!skip_type && wc->masks.dl_type) {
-        ds_put_format(s, "dl_type=0x%04"PRIx16",", ntohs(f->dl_type));
+        if (wc->masks.dl_type == OVS_BE16_MAX) {
+            ds_put_format(s, "dl_type=0x%04"PRIx16",", ntohs(f->dl_type));
+        } else {
+            ds_put_format(s, "dl_type=0x%04"PRIx16"/0x%04"PRIx16",",
+                          ntohs(f->dl_type),
+                          ntohs(wc->masks.dl_type));
+        }
     }
     if (f->dl_type == htons(ETH_TYPE_IPV6)) {
         format_ipv6_netmask(s, "ipv6_src", &f->ipv6_src, &wc->masks.ipv6_src);
