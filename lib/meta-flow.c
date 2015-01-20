@@ -1958,6 +1958,7 @@ char *
 mf_parse(const struct mf_field *mf, const char *s,
          union mf_value *value, union mf_value *mask)
 {
+    bool override = false;
     char *error;
 
     if (!strcmp(s, "*")) {
@@ -2011,7 +2012,7 @@ mf_parse(const struct mf_field *mf, const char *s,
         OVS_NOT_REACHED();
     }
 
-    if (!error && !mf_is_mask_valid(mf, mask)) {
+    if (!error && !mf_is_mask_valid(mf, mask) && override) {
         error = xasprintf("%s: invalid mask for field %s", s, mf->name);
     }
     return error;
@@ -2022,6 +2023,7 @@ mf_parse(const struct mf_field *mf, const char *s,
 char *
 mf_parse_value(const struct mf_field *mf, const char *s, union mf_value *value)
 {
+    bool override = false;
     union mf_value mask;
     char *error;
 
@@ -2030,7 +2032,7 @@ mf_parse_value(const struct mf_field *mf, const char *s, union mf_value *value)
         return error;
     }
 
-    if (!is_all_ones((const uint8_t *) &mask, mf->n_bytes)) {
+    if (!is_all_ones((const uint8_t *) &mask, mf->n_bytes) && override) {
         return xasprintf("%s: wildcards not allowed here", s);
     }
     return NULL;

@@ -990,6 +990,7 @@ char *
 parse_ofp_exact_flow(struct flow *flow, struct flow *mask, const char *s,
                      const struct simap *portno_names)
 {
+    bool override = false;
     char *pos, *key, *value_s;
     char *error = NULL;
     char *copy;
@@ -1034,7 +1035,7 @@ parse_ofp_exact_flow(struct flow *flow, struct flow *mask, const char *s,
                 goto exit;
             }
 
-            if (!mf_are_prereqs_ok(mf, flow)) {
+            if (!mf_are_prereqs_ok(mf, flow) && override) {
                 error = xasprintf("%s: prerequisites not met for setting %s",
                                   s, key);
                 goto exit;
