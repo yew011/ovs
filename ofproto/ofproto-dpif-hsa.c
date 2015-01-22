@@ -75,6 +75,10 @@ struct hsa_rule_ptr {
     struct hsa_rule *rule;
 };
 
+#define MOVE_MAP_LEN   (sizeof(struct flow) * 8)
+#define BIT_UNSET      0xFFFF
+#define BIT_SET        0xFFFE
+
 /* Representation of header space.
  *
  * Difference between match_hs and match_flow.
@@ -106,6 +110,21 @@ struct header_space {
     struct ovs_list constraints;
     /* Stores previous matched 'struct hsa_rule'. */
     struct ovs_list matched;
+
+    /* Records the origin of set/copied bits (by load/move action).
+     * Each index represents a bit in 'struct flow'.  Assume all fields
+     * are big endian.
+     *
+     * The uint16_t value consists of two part, 8-bit meta-flow field id
+     * and 8-bit index of the bit in original field.  If the variable is
+     * considered as uint8_t *array of size 2, then the former value is
+     * array[0], the latter value is at array[1].
+     *
+     * The value is 'BIT_UNSET' if the field has never been set, or 'BIT_SET'
+     * if the field has been set by aciton.
+     *
+     * */
+    uint16_t move_map[MOVE_MAP_LEN];
 };
 
 /* Global 'struct hsa_table's, one for each OpenFlow table. */
@@ -160,7 +179,21 @@ static bool hsa_mf_are_prereqs_ok(const struct mf_field *,
 static void hsa_mf_set_flow_value_masked(const struct mf_field *,
                                          const union mf_value *,
                                          const union mf_value *,
+                                         const union mf_value *,
                                          struct match *);
+static void hsa_set_move_map_bit(struct header_space *, size_t idx,
+                                 uint16_t value);
+static size_t hsa_field_offset_from_mf(const struct mf_field *);
+static void hsa_move_map_set_field_by_mask(struct header_space *,
+                                           const struct mf_field *,
+                                           const union mf_value *);
+static void hsa_move_map_set_field_by_subfield(struct header_space *,
+                                               const struct mf_subfield *,
+                                               const struct mf_subfield *);
+static void hsa_move_map_apply_matched_field(struct header_space *,
+                                             const struct mf_field *);
+static void hsa_mf_set_value(struct header_space *, const struct mf_field *,
+                             union mf_value *, union mf_value *);
 
 
 #define HSBT_LEN (sizeof(struct flow) * 2)
@@ -955,15 +988,208 @@ hsa_mf_are_prereqs_ok(const struct mf_field *mf,
 
 static void
 hsa_mf_set_flow_value_masked(const struct mf_field *field,
-                             const union mf_value *value,
-                             const union mf_value *mask,
+                             const union mf_value  *set_value,
+                             const union mf_value  *set_mask,
+                             const union mf_value  *mask,
                              struct match *match)
 {
     /* Sets the value. */
-    mf_set_flow_value_masked(field, value, mask, &match->flow);
+    mf_set_flow_value_masked(field, set_value, mask, &match->flow);
 
-    /* Unmasks the same part in 'match->wc'. */
-    mf_set_flow_value_masked(field, mask, mask, &match->wc.masks);
+    /* Sets the mask. */
+    mf_set_flow_value_masked(field, set_mask, mask, &match->wc.masks);
+}
+
+/* Sets a bit in 'hs->move_map' to 'value'. */
+static void
+hsa_set_move_map_bit(struct header_space *hs, size_t idx, uint16_t value)
+{
+    hs->move_map[idx] = value;
+}
+
+/* Given 'mf', returns the offset of field corresponding to the
+ * 'mf->if' in byte. */
+static size_t
+hsa_field_offset_from_mf(const struct mf_field *mf)
+{
+    switch (mf->id) {
+    case MFF_TUN_ID:
+        return offsetof(struct flow, tunnel.tun_id);
+    case MFF_METADATA:
+        return offsetof(struct flow, metadata);
+    CASE_MFF_REGS:
+        return offsetof(struct flow, regs[mf->id - MFF_REG0]);
+    case MFF_DP_HASH:
+    case MFF_RECIRC_ID:
+    case MFF_CONJ_ID:
+    case MFF_TUN_SRC:
+    case MFF_TUN_DST:
+    case MFF_TUN_FLAGS:
+    case MFF_TUN_TTL:
+    case MFF_TUN_TOS:
+    case MFF_IN_PORT:
+    case MFF_IN_PORT_OXM:
+    case MFF_ACTSET_OUTPUT:
+    case MFF_SKB_PRIORITY:
+    case MFF_PKT_MARK:
+    CASE_MFF_XREGS:
+    case MFF_ETH_SRC:
+    case MFF_ETH_DST:
+    case MFF_ETH_TYPE:
+    case MFF_VLAN_TCI:
+    case MFF_DL_VLAN:
+    case MFF_VLAN_VID:
+    case MFF_DL_VLAN_PCP:
+    case MFF_VLAN_PCP:
+    case MFF_MPLS_LABEL:
+    case MFF_MPLS_TC:
+    case MFF_MPLS_BOS:
+    case MFF_IPV4_SRC:
+    case MFF_IPV4_DST:
+    case MFF_IPV6_SRC:
+    case MFF_IPV6_DST:
+    case MFF_IPV6_LABEL:
+    case MFF_IP_PROTO:
+    case MFF_IP_DSCP:
+    case MFF_IP_DSCP_SHIFTED:
+    case MFF_IP_ECN:
+    case MFF_IP_TTL:
+    case MFF_IP_FRAG:
+    case MFF_ARP_OP:
+    case MFF_ARP_SPA:
+    case MFF_ARP_TPA:
+    case MFF_ARP_SHA:
+    case MFF_ND_SLL:
+    case MFF_ARP_THA:
+    case MFF_ND_TLL:
+    case MFF_TCP_SRC:
+    case MFF_UDP_SRC:
+    case MFF_SCTP_SRC:
+    case MFF_TCP_DST:
+    case MFF_UDP_DST:
+    case MFF_SCTP_DST:
+    case MFF_TCP_FLAGS:
+    case MFF_ICMPV4_TYPE:
+    case MFF_ICMPV6_TYPE:
+    case MFF_ICMPV4_CODE:
+    case MFF_ICMPV6_CODE:
+    case MFF_ND_TARGET:
+    case MFF_N_IDS:
+    default:
+        OVS_NOT_REACHED();
+    }
+
+    return 0;
+}
+
+/* Given the 'mf' and 'mask', sets the corresponding bits in 'hs->move_map'
+ * to 'BIT_SET'.  Assumes 'mf' has already passed the prerequisite check. */
+static void
+hsa_move_map_set_field_by_mask(struct header_space *hs,
+                               const struct mf_field *mf,
+                               const union mf_value *mask)
+{
+    const uint8_t *bytes = (const uint8_t *) mask;
+    size_t field_offset = hsa_field_offset_from_mf(mf);
+    size_t field_len = mf->n_bytes;
+    int i;
+
+    for (i = field_len - 1; i >= 0; i--) {
+        size_t byte_offset_in_bits = field_offset * 8 + i * 8;
+        const uint8_t byte = bytes[i];
+        size_t j;
+
+        for (j = 0; j < 8; j++) {
+            if ((byte >> j) & 0x1) {
+                hsa_set_move_map_bit(hs, byte_offset_in_bits + 7 - j,
+                                     BIT_SET);
+            }
+        }
+    }
+}
+
+/* Caller must guarantee the 'dst->mf' has already passed the
+ * prerequisite check. */
+static void
+hsa_move_map_set_field_by_subfield(struct header_space *hs,
+                                   const struct mf_subfield *src,
+                                   const struct mf_subfield *dst)
+{
+    size_t dst_fd_offset = hsa_field_offset_from_mf(dst->field);
+    size_t dst_set_start;
+    size_t i;
+
+    /* Computes the starting position in 'hs->move_map' for dst field. */
+    dst_set_start = dst_fd_offset * 8 + dst->field->n_bits - 1 - dst->ofs;
+
+    for (i = 0; i < src->n_bits; i++) {
+        uint16_t value;
+
+        ((uint8_t *) &value)[0] = CONST_CAST(uint8_t, src->field->id);
+        ((uint8_t *) &value)[1] = src->ofs + i;
+        hsa_set_move_map_bit(hs, dst_set_start - i, value);
+    }
+}
+
+/* Checks if the just applied 'mf' field in 'hs->match_hs' is copied
+ * from other field.  If so, applied same match to the original field. */
+static void
+hsa_move_map_apply_matched_field(struct header_space *hs,
+                                 const struct mf_field *mf)
+{
+    union mf_value fd_value;
+    union mf_value fd_mask;
+    size_t fd_ofs = hsa_field_offset_from_mf(mf);
+    int i;
+
+    mf_get_value(mf, &hs->match_hs.flow, &fd_value);
+    mf_get_value(mf, &hs->match_hs.wc.masks, &fd_mask);
+
+    /* Starts checking from bit zero of the field. */
+    for (i = mf->n_bits - 1; i >= 0; i--) {
+        uint16_t value = hs->move_map[fd_ofs * 8 + i];
+
+        /* Finds a moved bit.  The original bit must be 'BIT_UNSET'. */
+        if (value != BIT_SET && value != BIT_UNSET) {
+            const struct mf_field *orig_mf;
+            union mf_value src_mask;
+            union mf_value src_value;
+            uint16_t orig_value;
+            uint8_t mf_id, bit;
+            size_t orig_fd_ofs;
+            size_t idx;
+
+            mf_id = ((uint8_t *) &value)[0];
+            bit = ((uint8_t *) &value)[1];
+            orig_mf = mf_from_id(mf_id);
+            orig_fd_ofs = hsa_field_offset_from_mf(mf);
+            idx = orig_fd_ofs * 8 + orig_mf->n_bits - 1 - bit;
+            orig_value = hs->move_map[idx];
+
+            /* Does not support BIT_SET, since no idea if the bit
+             * is copied before/after the set. */
+            ovs_assert(orig_value == BIT_UNSET);
+
+            mf_get_value(orig_mf, &hs->match_hs.flow, &src_value);
+            mf_get_value(orig_mf, &hs->match_hs.wc.masks, &src_mask);
+            bitwise_copy(&fd_value, mf->n_bytes, mf->n_bits - i - 1,
+                         &src_value, orig_mf->n_bytes, bit, 1);
+            bitwise_copy(&fd_mask, mf->n_bytes, mf->n_bits - i - 1,
+                         &src_mask, orig_mf->n_bytes, bit, 1);
+            hsa_mf_set_value(hs, orig_mf, &src_value, &src_mask);
+        }
+    }
+}
+
+/* Sets the field 'mf' in both 'hs->match_hs' and 'hs->match_flow'. */
+static void
+hsa_mf_set_value(struct header_space *hs, const struct mf_field *mf,
+                 union mf_value *value, union mf_value *mask)
+{
+    mf_set_flow_value(mf, value, &hs->match_hs.flow);
+    mf_set_flow_value(mf, value, &hs->match_flow.flow);
+    mf_set_flow_value(mf, mask, &hs->match_hs.wc.masks);
+    mf_set_flow_value(mf, mask, &hs->match_flow.wc.masks);
 }
 
 #define FLOW_ATTRS                               \
@@ -1017,6 +1243,36 @@ hsa_mf_set_flow_value_masked(const struct mf_field *field,
     FLOW_ATTR(igmp_group_ip4)                    \
     FLOW_ATTR(dp_hash)
 
+/* Converts 'struct flow' field offset to 'mf'. */
+static const struct mf_field *
+offset_to_mf(size_t offset)
+{
+    switch (offset) {
+    case offsetof(struct flow, tunnel.tun_id):
+        return mf_from_id(MFF_TUN_ID);
+    case offsetof(struct flow, metadata):
+        return mf_from_id(MFF_METADATA);
+    case offsetof(struct flow, regs[0]):
+        return mf_from_id(MFF_REG0);
+    case offsetof(struct flow, regs[1]):
+        return mf_from_id(MFF_REG1);
+    case offsetof(struct flow, regs[2]):
+        return mf_from_id(MFF_REG2);
+    case offsetof(struct flow, regs[3]):
+        return mf_from_id(MFF_REG3);
+    case offsetof(struct flow, regs[4]):
+        return mf_from_id(MFF_REG4);
+    case offsetof(struct flow, regs[5]):
+        return mf_from_id(MFF_REG5);
+    case offsetof(struct flow, regs[6]):
+        return mf_from_id(MFF_REG6);
+    case offsetof(struct flow, regs[7]):
+        return mf_from_id(MFF_REG7);
+    }
+
+    return NULL;
+}
+
 /* Applies the 'rule's flow format and wildcards to header
  * space 'hs'. */
 static void
@@ -1032,6 +1288,8 @@ hsa_rule_apply_match(struct header_space *hs, struct hsa_rule *rule)
 #define FLOW_ATTR(ATTR)                                                 \
     if (!flow_wildcard_is_fully_unmasked(&masks->ATTR,                  \
                                          sizeof masks->ATTR)) {         \
+        const struct mf_field *mf;                                            \
+                                                                        \
         if (!memcmp(&hs->match_flow.flow.ATTR, &hs->match_hs.flow.ATTR, \
                     sizeof hs->match_flow.flow.ATTR)                    \
             && !memcmp(&hs->match_flow.wc.masks.ATTR,                   \
@@ -1044,6 +1302,10 @@ hsa_rule_apply_match(struct header_space *hs, struct hsa_rule *rule)
         flow_wildcard_apply(&hs->match_hs.flow.ATTR,                    \
                             &hs->match_hs.wc.masks.ATTR,                \
                             &flow->ATTR, &masks->ATTR, sizeof flow->ATTR); \
+        mf = offset_to_mf(offsetof(struct flow, ATTR));                 \
+        if (mf) {                                                       \
+            hsa_move_map_apply_matched_field(hs, mf);                   \
+        }                                                               \
     }
     FLOW_ATTRS
 #undef FLOW_ATTR
@@ -1190,6 +1452,8 @@ hsa_rule_apply_actions(struct header_space *input_hs, struct hsa_rule *rule,
     /* 'ret' could be changed by multiple 'resubmit' actions. */
     list_insert(&ret->hs_list, &input_hs->list_node);
 
+    /* fix me: actions other than 'load' and 'move' are not changing
+     *         the 'hs->move_map'.  should make them do it. */
     OFPACT_FOR_EACH (a, ofpacts, ofpacts_len) {
         struct header_space *hs, *next;
         struct hsa_list *new_ret = hsa_list_create();
@@ -1400,10 +1664,8 @@ hsa_rule_apply_actions(struct header_space *input_hs, struct hsa_rule *rule,
                 if (hsa_mf_are_prereqs_ok(move->dst.field, hs)) {
                     union mf_value src_value;
                     union mf_value dst_value;
-                    union mf_value all_zero_value;
                     union mf_value src_mask;
                     union mf_value dst_mask;
-                    union mf_value all_one_mask;
 
                     /* Saves the src/dst values/masks. */
                     mf_get_value(move->dst.field, hs_flow, &dst_value);
@@ -1421,18 +1683,8 @@ hsa_rule_apply_actions(struct header_space *input_hs, struct hsa_rule *rule,
                     mf_set_flow_value(move->dst.field, &dst_value, hs_flow);
                     mf_set_flow_value(move->dst.field, &dst_mask, &hs_wc->masks);
 
-                    /* Unsets the src field. */
-                    memset(&all_zero_value, 0, sizeof(union mf_value));
-                    memset(&all_one_mask, 0xff, sizeof(union mf_value));
-
-                    bitwise_copy(&all_zero_value, move->src.field->n_bytes, move->src.ofs,
-                                 &src_value, move->dst.field->n_bytes, move->dst.ofs,
-                                 move->src.n_bits);
-                    bitwise_copy(&all_one_mask, move->src.field->n_bytes, move->src.ofs,
-                                 &src_mask, move->dst.field->n_bytes, move->dst.ofs,
-                                 move->src.n_bits);
-                    mf_set_flow_value(move->src.field, &src_value, hs_flow);
-                    mf_set_flow_value(move->src.field, &src_mask, &hs_wc->masks);
+                    hsa_move_map_set_field_by_subfield(hs, &move->src,
+                                                       &move->dst);
                 }
                 break;
             }
@@ -1445,7 +1697,9 @@ hsa_rule_apply_actions(struct header_space *input_hs, struct hsa_rule *rule,
                 if (hsa_mf_are_prereqs_ok(mf, hs)) {
                     hsa_mf_set_flow_value_masked(mf, &set_field->value,
                                                  &set_field->mask,
+                                                 &set_field->mask,
                                                  &hs->match_hs);
+                    hsa_move_map_set_field_by_mask(hs, mf, &set_field->mask);
                 }
                 break;
 
@@ -1620,6 +1874,7 @@ hs_create(void)
     hs->output = OFPP_NONE;
     list_init(&hs->constraints);
     list_init(&hs->matched);
+    memset(hs->move_map, 0xff, MOVE_MAP_LEN * sizeof(uint16_t));
 
     return hs;
 }
@@ -1650,6 +1905,8 @@ hs_clone(const struct header_space *hs)
         copy->rule = iter_ptr->rule;
         list_insert(&clone->matched, &copy->list_node);
     }
+
+    memcpy(clone->move_map, hs->move_map, sizeof hs->move_map);
 
     return clone;
 }
