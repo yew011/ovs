@@ -20,6 +20,7 @@
 #include <config.h>
 #undef NDEBUG
 #include "list.h"
+#include "sort.h"
 #include <assert.h>
 #include <string.h>
 #include "ovstest.h"
@@ -160,6 +161,100 @@ test_list_for_each_safe(void)
 }
 
 static void
+test_list_swap_elem(void)
+{
+    enum { MAX_ELEMS = 100 };
+    struct element elements[MAX_ELEMS];
+    int values[MAX_ELEMS];
+    size_t n = MAX_ELEMS;
+    struct ovs_list list;
+
+    make_list(&list, elements, values, n);
+    elements[1].value = 50;
+    elements[50].value = 1;
+    list_swap(&elements[1].node, &elements[50].node);
+    check_list(&list, values, n);
+}
+
+static void
+test_list_at_position(void)
+{
+    enum { MAX_ELEMS = 10 };
+    struct element elements[MAX_ELEMS];
+    int values[MAX_ELEMS];
+    size_t n = MAX_ELEMS;
+    struct ovs_list list;
+
+    make_list(&list, elements, values, n);
+    for (n = 0; n < MAX_ELEMS; n++) {
+        struct ovs_list *node = list_at_position(&list, n);
+
+        ovs_assert(node == &elements[n].node);
+    }
+}
+
+static int
+test_list_compare(size_t a, size_t b, void *aux)
+{
+    struct ovs_list *list = aux;
+    struct element *elem1, *elem2;
+
+    elem1 = CONTAINER_OF(list_at_position(list, a), struct element, node);
+    elem2 = CONTAINER_OF(list_at_position(list, b), struct element, node);
+
+    return elem1->value - elem2->value;
+}
+
+static void
+test_list_swap(size_t a, size_t b, void *aux)
+{
+    struct ovs_list *list = aux;
+
+    list_swap(list_at_position(list, a), list_at_position(list, b));
+}
+
+static void
+test_list_sort(void)
+{
+    enum { MAX_ELEMS = 10 };
+    struct element elements[MAX_ELEMS];
+    int values[MAX_ELEMS];
+    size_t n = MAX_ELEMS;
+    struct ovs_list list;
+
+    make_list(&list, elements, values, n);
+    for (n = 0; n < MAX_ELEMS; n++) {
+        elements[n].value = MAX_ELEMS - 1 - n;
+    }
+    /* Sorts the list in ascending order of priority. */
+    sort(n, test_list_compare, test_list_swap, &list);
+    check_list(&list, values, n);
+}
+
+static void
+test_list_join(void)
+{
+    enum { MAX_ELEMS = 10 };
+    struct element elements_1[MAX_ELEMS];
+    struct element elements_2[MAX_ELEMS];
+    int values[2*MAX_ELEMS];
+    size_t n = MAX_ELEMS;
+    struct ovs_list list_dst, list_src;
+
+    make_list(&list_dst, elements_1, values, n);
+    make_list(&list_src, elements_2, values, n);
+    /* Makes 'elements_2' contains values {MAX_ELEMS..2*MAX_ELEMS-1}. */
+    for (n = MAX_ELEMS; n < 2*MAX_ELEMS; n++) {
+        elements_2[n-MAX_ELEMS].value += MAX_ELEMS;
+        values[n] = n;
+    }
+
+    list_join(&list_dst, &list_src);
+    assert(list_is_empty(&list_src));
+    check_list(&list_dst, values, 2*MAX_ELEMS);
+}
+
+static void
 run_test(void (*function)(void))
 {
     function();
@@ -171,6 +266,10 @@ test_list_main(int argc OVS_UNUSED, char *argv[] OVS_UNUSED)
 {
     run_test(test_list_construction);
     run_test(test_list_for_each_safe);
+    run_test(test_list_swap_elem);
+    run_test(test_list_at_position);
+    run_test(test_list_sort);
+    run_test(test_list_join);
     printf("\n");
 }
 
