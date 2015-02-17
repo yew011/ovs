@@ -30,10 +30,12 @@ static inline void list_poison(struct ovs_list *);
 static inline void list_insert(struct ovs_list *, struct ovs_list *);
 static inline void list_splice(struct ovs_list *before, struct ovs_list *first,
                                struct ovs_list *last);
+static inline void list_join(struct ovs_list *dst, struct ovs_list *src);
 static inline void list_push_front(struct ovs_list *, struct ovs_list *);
 static inline void list_push_back(struct ovs_list *, struct ovs_list *);
 static inline void list_replace(struct ovs_list *, const struct ovs_list *);
 static inline void list_moved(struct ovs_list *, const struct ovs_list *orig);
+static inline void list_swap(struct ovs_list *, struct ovs_list *);
 static inline void list_move(struct ovs_list *dst, struct ovs_list *src);
 
 /* List removal. */
@@ -44,6 +46,8 @@ static inline struct ovs_list *list_pop_back(struct ovs_list *);
 /* List elements. */
 static inline struct ovs_list *list_front(const struct ovs_list *);
 static inline struct ovs_list *list_back(const struct ovs_list *);
+static inline struct ovs_list *list_at_position(const struct ovs_list *,
+                                                size_t n);
 
 /* List properties. */
 static inline size_t list_size(const struct ovs_list *);
@@ -101,6 +105,18 @@ list_insert(struct ovs_list *before, struct ovs_list *elem)
     before->prev = elem;
 }
 
+/* Appends 'src''s content to the end of 'dst'.  After 'list_join', 'src'
+ * becomes an empty list. */
+static inline void
+list_join(struct ovs_list *dst, struct ovs_list *src)
+{
+    if (list_is_empty(src)) {
+        return;
+    }
+
+    list_splice(dst, list_front(src), src);
+}
+
 /* Removes elements 'first' though 'last' (exclusive) from their current list,
    then inserts them just before 'before'. */
 static inline void
@@ -147,6 +163,38 @@ list_replace(struct ovs_list *element, const struct ovs_list *position)
     element->next->prev = element;
     element->prev = position->prev;
     element->prev->next = element;
+}
+
+/* Swaps the two adjacent list elements. 'ahead' must be ahead of 'after'. */
+static inline void
+list_swap_adjacent(struct ovs_list *ahead, struct ovs_list *after)
+{
+    ahead->next = after->next;
+    ahead->next->prev = ahead;
+    after->prev = ahead->prev;
+    ahead->prev->next = after;
+    ahead->prev = after;
+    after->next = ahead;
+}
+
+/* Swaps the position of two list nodes, 'elem1' and 'elem2'. */
+static inline void
+list_swap(struct ovs_list *elem1, struct ovs_list *elem2)
+{
+    if (elem1 == elem2) {
+        return;
+    } else if (elem1->prev == elem2) {
+        /* element2 is ahead of element1. */
+        list_swap_adjacent(elem2, elem1);
+    } else if (elem2->prev == elem1) {
+        /* element1 is ahead of element2. */
+        list_swap_adjacent(elem1, elem2);
+    } else {
+        const struct ovs_list tmp = *elem1;
+
+        list_replace(elem1, elem2);
+        list_replace(elem2, &tmp);
+    }
 }
 
 /* Adjusts pointers around 'list' to compensate for 'list' having been moved
@@ -231,6 +279,25 @@ list_back(const struct ovs_list *list_)
     ovs_assert(!list_is_empty(list));
 
     return list->prev;
+}
+
+/* Returns the element at position 'n', assumes the first element is
+ * at index 0.  The 'list_' must contain at least 'n' elements. */
+static inline struct ovs_list *
+list_at_position(const struct ovs_list *list_, size_t n)
+{
+    struct ovs_list *list = CONST_CAST(struct ovs_list *, list_);
+    struct ovs_list *ret;
+    size_t cnt = 0;
+
+    for (ret = list->next; ret != list; ret = ret->next) {
+        if (cnt++ == n) {
+            return ret;
+        }
+    }
+    ovs_assert(false);
+
+    return NULL;
 }
 
 /* Returns the number of elements in 'list'.
