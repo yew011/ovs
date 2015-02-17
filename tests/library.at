@@ -209,3 +209,8 @@ AT_CLEANUP
 AT_SETUP([use of public headers])
 AT_CHECK([test-lib], [0], [])
 AT_CLEANUP
+
+AT_SETUP([test hsa match])
+AT_CHECK([ovstest test-hsa-match], [0], [..
+])
+AT_CLEANUP
