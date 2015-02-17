@@ -136,6 +136,7 @@ valgrind_wrappers = \
 	tests/valgrind/test-hash \
 	tests/valgrind/test-hindex \
 	tests/valgrind/test-hmap \
+	tests/valgrind/test-hsa-match \
 	tests/valgrind/test-json \
 	tests/valgrind/test-jsonrpc \
 	tests/valgrind/test-list \
@@ -273,6 +274,7 @@ tests_ovstest_SOURCES = \
 	tests/test-heap.c \
 	tests/test-hindex.c \
 	tests/test-hmap.c \
+	tests/test-hsa-match.c \
 	tests/test-json.c \
 	tests/test-jsonrpc.c \
 	tests/test-list.c \
