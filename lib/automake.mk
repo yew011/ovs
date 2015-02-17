@@ -111,6 +111,8 @@ lib_libopenvswitch_la_SOURCES = \
 	lib/mac-learning.h \
 	lib/match.c \
 	lib/match.h \
+	lib/hsa-match.c \
+	lib/hsa-match.h \
 	lib/mcast-snooping.c \
 	lib/mcast-snooping.h \
 	lib/memory.c \
