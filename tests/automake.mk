@@ -53,6 +53,7 @@ TESTSUITE_AT = \
 	tests/dpif-netdev.at \
 	tests/dpctl.at \
 	tests/ofproto-dpif.at \
+	tests/ofproto-hsa.at \
 	tests/bridge.at \
 	tests/vlan-splinters.at \
 	tests/ofproto.at \

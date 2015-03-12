@@ -52,6 +52,7 @@
 #include "ofp-actions.h"
 #include "ofp-parse.h"
 #include "ofp-print.h"
+#include "ofproto-dpif-hsa.h"
 #include "ofproto-dpif-ipfix.h"
 #include "ofproto-dpif-mirror.h"
 #include "ofproto-dpif-monitor.h"
@@ -1261,6 +1262,7 @@ construct(struct ofproto *ofproto_)
     guarded_list_init(&ofproto->pins);
 
     ofproto_unixctl_init();
+    ofproto_dpif_hsa_init();
 
     hmap_init(&ofproto->vlandev_map);
     hmap_init(&ofproto->realdev_vid_map);
