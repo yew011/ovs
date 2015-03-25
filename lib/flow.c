@@ -898,8 +898,50 @@ flow_print(FILE *stream, const struct flow *flow)
     fputs(s, stream);
     free(s);
 }
+
+/* Applies the 'src_field' & 'src_wc' to 'dst_field' and 'dst_wc'
+ * respectively. */
+void
+flow_apply_field(void *dst_field, void *dst_wc, const void *src_field,
+                 const void *src_wc, size_t size)
+{
+    const uint8_t *sf = src_field;
+    const uint8_t *sw = src_wc;
+    uint8_t *df = dst_field;
+    uint8_t *dw = dst_wc;
+    size_t i;
+
+    for (i = 0; i < size ; i++) {
+        df[i] = sf[i] | df[i];
+        dw[i] = sw[i] | dw[i];
+    }
+}
 
 /* flow_wildcards functions. */
+
+/* Returns true if the 'field' of 'len' byte long is
+ * all one. */
+bool
+flow_wildcard_is_fully_masked(void *field, size_t len)
+{
+    char cmp[len];
+
+    memset(cmp, 0xff, len);
+
+    return !memcmp(field, cmp, len);
+}
+
+/* Returns true if the 'field' of 'len' byte long is
+ * all zero. */
+bool
+flow_wildcard_is_fully_unmasked(void *field, size_t len)
+{
+    char cmp[len];
+
+    memset(cmp, 0, len);
+
+    return !memcmp(field, cmp, len);
+}
 
 /* Initializes 'wc' as a set of wildcards that matches every packet. */
 void

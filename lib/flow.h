@@ -232,6 +232,8 @@ void flow_set_mpls_bos(struct flow *, int idx, uint8_t stack);
 void flow_set_mpls_lse(struct flow *, int idx, ovs_be32 lse);
 
 void flow_compose(struct dp_packet *, const struct flow *);
+void flow_apply_field(void *dst_field, void *dst_wc, const void *src_field,
+                      const void *src_wc, size_t size);
 
 static inline uint64_t
 flow_get_xreg(const struct flow *flow, int idx)
@@ -326,6 +328,9 @@ struct flow_wildcards {
     memset(&(WC)->masks.FIELD, 0xff, sizeof (WC)->masks.FIELD)
 #define WC_UNMASK_FIELD(WC, FIELD) \
     memset(&(WC)->masks.FIELD, 0, sizeof (WC)->masks.FIELD)
+
+bool flow_wildcard_is_fully_masked(void *field, size_t len);
+bool flow_wildcard_is_fully_unmasked(void *field, size_t len);
 
 void flow_wildcards_init_catchall(struct flow_wildcards *);
 
