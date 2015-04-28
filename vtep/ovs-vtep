@@ -47,6 +47,7 @@ ls_count = 0
 tun_id = 0
 bfd_bridge = "vtep_bfd"
 bfd_ref = {}
+is_test = False
 
 def call_prog(prog, args_list):
     cmd = [prog, "-vconsole:off"] + args_list
@@ -101,9 +102,11 @@ class Logical_Switch(object):
                       % (self.tunnel_key, self.name))
         else:
             self.tunnel_key = 0
-            vlog.warn("invalid tunnel key for %s, using 0" % self.name)
+            vlog.warn("invalid tunenl key for %s, using 0" % self.name)
 
         ovs_vsctl("--may-exist add-br %s" % self.short_name)
+        if is_test:
+            ovs_vsctl("-- set Bridge %s datapath-type=dummy" % self.short_name)
         ovs_vsctl("br-set-external-id %s vtep_logical_switch true"
                   % self.short_name)
         ovs_vsctl("br-set-external-id %s logical_switch_name %s"
@@ -637,6 +640,8 @@ def setup():
             ovs_vsctl("del-br %s" % br)
 
     ovs_vsctl("add-br %s" % bfd_bridge)
+    if is_test:
+        ovs_vsctl("-- set Bridge %s datapath-type=dummy" % bfd_bridge)
 
 
 def main():
@@ -646,6 +651,8 @@ def main():
     parser.add_argument("--root-prefix", metavar="DIR",
                         help="Use DIR as alternate root directory"
                         " (for testing).")
+    parser.add_argument("--test", action="store_true",
+                        help="Use dummy as datapath type.")
     parser.add_argument("--version", action="version",
                         version="%s %s" % (ovs.util.PROGRAM_NAME, VERSION))
 
@@ -654,6 +661,10 @@ def main():
     args = parser.parse_args()
     ovs.vlog.handle_args(args)
     ovs.daemon.handle_args(args)
+
+    global is_test
+    if args.test:
+        is_test = args.test
 
     global root_prefix
     if args.root_prefix:
