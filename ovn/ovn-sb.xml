@@ -194,7 +194,8 @@
 
     <column name="vlan_map">
       Maps from a VLAN ID to a logical port name.  Thus, each named logical
-      port corresponds to one VLAN on the gateway port.
+      port corresponds to one VLAN on the gateway port.  The logical port name
+      is the combination of physical_switch_name+physical_port+vlan_number.
     </column>
   </table>
 

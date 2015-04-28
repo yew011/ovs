@@ -89,6 +89,7 @@ man_MANS += ovn/ovn-sbctl.8
 DISTCLEANFILES += ovn/ovn-sbctl.8
 
 include ovn/controller/automake.mk
+include ovn/controller-gw/automake.mk
 include ovn/lib/automake.mk
 include ovn/northd/automake.mk
 include ovn/utilities/automake.mk
