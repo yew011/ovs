@@ -25,6 +25,7 @@
 #include "compiler.h"
 #include "daemon.h"
 #include "dirs.h"
+#include "dynamic-string.h"
 #include "openvswitch/vconn.h"
 #include "openvswitch/vlog.h"
 #include "ovn/lib/ovn-sb-idl.h"
@@ -43,6 +44,7 @@
 VLOG_DEFINE_THIS_MODULE(ovn_gw);
 
 static unixctl_cb_func ovn_controller_gw_exit;
+static unixctl_cb_func ovn_controller_gw_add_lport;
 
 static void parse_options(int argc, char *argv[]);
 OVS_NO_RETURN static void usage(void);
@@ -111,6 +113,8 @@ main(int argc, char *argv[])
     }
     unixctl_command_register("exit", "", 0, 0, ovn_controller_gw_exit,
                              &exiting);
+    unixctl_command_register("add-lport", "lswitch_name lport_name phy_port vlan",
+                             4, 4, ovn_controller_gw_add_lport, &ctx);
 
     daemonize_complete();
 
@@ -266,12 +270,108 @@ usage(void)
     exit(EXIT_SUCCESS);
 }
 
+
 static void
 ovn_controller_gw_exit(struct unixctl_conn *conn, int argc OVS_UNUSED,
-             const char *argv[] OVS_UNUSED, void *exiting_)
+                       const char *argv[] OVS_UNUSED, void *exiting_)
 {
     bool *exiting = exiting_;
     *exiting = true;
 
     unixctl_command_reply(conn, NULL);
+}
+
+/* TODO: Remove lport?  */
+static void
+ovn_controller_gw_add_lport(struct unixctl_conn *conn, int argc OVS_UNUSED,
+                            const char *argv[], void *ctx_)
+{
+    const struct vteprec_logical_switch *ls_rec;
+    const struct vteprec_physical_port *pp_rec;
+    struct controller_gw_ctx *ctx = ctx_;
+    struct ovsdb_idl_txn *txn;
+    const char *ls_name = argv[1];
+    const char *lp_name = argv[2];
+    const char *pp_name = argv[3];
+    const int64_t vlan = strtoull(argv[4], NULL, 0);
+    struct ds result;
+    int retval = TXN_TRY_AGAIN;
+    int i;
+
+    ds_init(&result);
+    /* Checks the existence of lswitch. */
+    VTEPREC_LOGICAL_SWITCH_FOR_EACH(ls_rec, ctx->vtep_idl) {
+        if (!strcmp(ls_name, ls_rec->name)) {
+            break;
+        }
+    }
+    if (!ls_rec) {
+        ds_put_format(&result, "could not find Logical Switch (%s)",
+                      ls_name);
+        goto ret;
+    }
+
+    /* Checks the existence of Physical Port. */
+    VTEPREC_PHYSICAL_PORT_FOR_EACH(pp_rec, ctx->vtep_idl) {
+        if (!strcmp(pp_name, pp_rec->name)) {
+            break;
+        }
+    }
+    if (!pp_rec) {
+        ds_put_format(&result, "could not find Physical Port (%s)",
+                      pp_name);
+        goto ret;
+    }
+
+    /* Checks the duplication of vlan_binding. */
+    for (i = 0; i < pp_rec->n_vlan_bindings; i++) {
+        const int64_t vlan_ = pp_rec->key_vlan_bindings[i];
+        const struct vteprec_logical_switch *ls_ = pp_rec->value_vlan_bindings[i];
+
+        if (vlan == vlan_) {
+            if (ls_rec != ls_) {
+                ds_put_format(&result, "vlan (%"PRId64") has already been mapped to "
+                              "Logical Switch (%s)", vlan, ls_->name);
+            }
+            goto ret;
+        }
+    }
+
+    txn = ovsdb_idl_txn_create(ctx->vtep_idl);
+    ovsdb_idl_txn_add_comment(txn,
+                              "ovn-controller-gw: add vlan_binding: vlan (%"PRId64") "
+                              "to Logical Switch (%s)", vlan, ls_rec->name);
+
+    int64_t *key_vlan_bindings;
+    struct vteprec_logical_switch **value_vlan_bindings;
+
+    key_vlan_bindings = xmalloc(sizeof *key_vlan_bindings * (pp_rec->n_vlan_bindings + 1));
+    value_vlan_bindings = xmalloc(sizeof *value_vlan_bindings * (pp_rec->n_vlan_bindings + 1));
+
+    for (i = 0; i < pp_rec->n_vlan_bindings; i++) {
+        key_vlan_bindings[i] = pp_rec->key_vlan_bindings[i];
+        value_vlan_bindings[i] = pp_rec->value_vlan_bindings[i];
+    }
+    key_vlan_bindings[pp_rec->n_vlan_bindings] = vlan;
+    value_vlan_bindings[pp_rec->n_vlan_bindings] =
+        CONST_CAST(struct vteprec_logical_switch *, ls_rec);
+
+    vteprec_physical_port_set_vlan_bindings(pp_rec, key_vlan_bindings,
+                                            value_vlan_bindings,
+                                            pp_rec->n_vlan_bindings + 1);
+
+    retval = ovsdb_idl_txn_commit_block(txn);
+    if (retval != TXN_SUCCESS && retval != TXN_UNCHANGED) {
+        VLOG_INFO("Problem registering chassis: %s",
+                  ovsdb_idl_txn_status_to_string(retval));
+        poll_immediate_wake();
+    }
+
+    ovsdb_idl_txn_destroy(txn);
+    free(key_vlan_bindings);
+    free(value_vlan_bindings);
+
+ret:
+    unixctl_command_reply(conn, ds_cstr(&result));
+    ds_destroy(&result);
 }
