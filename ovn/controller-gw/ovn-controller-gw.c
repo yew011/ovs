@@ -38,6 +38,7 @@
 #include "unixctl.h"
 #include "util.h"
 
+#include "bindings.h"
 #include "gateway.h"
 #include "ovn-controller-gw.h"
 
@@ -164,6 +165,7 @@ main(int argc, char *argv[])
         }
 
         gateway_run(&ctx);
+        bindings_run(&ctx);
 
         /* TODO: call chassis_run(&ctx); to register/update chassis. */
         unixctl_server_run(unixctl);
@@ -179,6 +181,8 @@ main(int argc, char *argv[])
     }
 
     unixctl_server_destroy(unixctl);
+    gateway_destroy(&ctx);
+    bindings_destroy(&ctx);
     /* TODO: call chassis_destroy(&ctx); to detroy chassis. */
 
     ovsdb_idl_destroy(ctx.vtep_idl);
