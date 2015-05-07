@@ -338,9 +338,9 @@ ovn_controller_gw_add_lport(struct unixctl_conn *conn, int argc OVS_UNUSED,
                             const char *argv[], void *ctx_)
 {
     const struct vteprec_logical_switch *ls_rec;
-    const struct vteprec_logical_switch *ls_target = NULL;
     const struct vteprec_physical_port *pp_rec;
-    const struct vteprec_physical_port *pp_target = NULL;
+    const struct sbrec_chassis *chassis_rec;
+    const struct sbrec_gateway *gw_rec = NULL;
     struct controller_gw_ctx *ctx = ctx_;
     struct ovsdb_idl_txn *txn;
     const char *ls_name = argv[1];
@@ -352,69 +352,101 @@ ovn_controller_gw_add_lport(struct unixctl_conn *conn, int argc OVS_UNUSED,
     int i;
 
     ds_init(&result);
+    /* First, checks in vtep.  */
     /* Checks the existence of lswitch. */
     VTEPREC_LOGICAL_SWITCH_FOR_EACH(ls_rec, ctx->vtep_idl) {
         if (!strcmp(ls_name, ls_rec->name)) {
-            ls_target = ls_rec;
             break;
         }
     }
-    if (!ls_target) {
-        ds_put_format(&result, "could not find Logical Switch (%s)",
+    if (!ls_rec) {
+        ds_put_format(&result, "could not find Logical Switch (%s) in VTEP",
                       ls_name);
         goto ret;
     }
-
-    /* TODO: Checks for duplication of lport. */
-
     /* Checks the existence of Physical Port. */
     VTEPREC_PHYSICAL_PORT_FOR_EACH(pp_rec, ctx->vtep_idl) {
         if (!strcmp(pp_name, pp_rec->name)) {
-            pp_target = pp_rec;
             break;
         }
     }
-    if (!pp_target) {
-        ds_put_format(&result, "could not find Physical Port (%s)",
+    if (!pp_rec) {
+        ds_put_format(&result, "could not find Physical Port (%s) in VTEP",
                       pp_name);
         goto ret;
     }
-
     /* Checks the duplication of vlan_binding. */
-    for (i = 0; i < pp_target->n_vlan_bindings; i++) {
-        const int64_t vlan_tmp = pp_target->key_vlan_bindings[i];
-        const struct vteprec_logical_switch *ls_tmp = pp_target->value_vlan_bindings[i];
+    for (i = 0; i < pp_rec->n_vlan_bindings; i++) {
+        const int64_t vlan_tmp = pp_rec->key_vlan_bindings[i];
+        const struct vteprec_logical_switch *ls_tmp = pp_rec->value_vlan_bindings[i];
 
         if (vlan == vlan_tmp) {
-            if (ls_tmp != ls_target) {
+            if (ls_tmp != ls_rec) {
                 ds_put_format(&result, "vlan (%"PRId64") has already been mapped to "
-                              "Logical Switch (%s)", vlan, ls_target->name);
+                              "Logical Switch (%s) in VTEP", vlan, ls_rec->name);
+            } else {
+                ds_put_format(&result, "vlan (%"PRId64") binding to Logical "
+                              "Switch (%s) already exists in VTEP", vlan, ls_rec->name);
             }
             goto ret;
         }
     }
 
+    /* Second, checks in ovn-sb. */
+    SBREC_CHASSIS_FOR_EACH(chassis_rec, ctx->ovnsb_idl) {
+        if (!strcmp(chassis_rec->name, ctx->chassis_id)) {
+            break;
+        }
+    }
+    /* Chassis must has the physical port. */
+    for (i = 0; i < chassis_rec->n_gateway_ports; i++) {
+        if (!strcmp(chassis_rec->key_gateway_ports[i], pp_name)) {
+            gw_rec = chassis_rec->value_gateway_ports[i];
+        }
+    }
+    if (!gw_rec) {
+        ds_put_format(&result, "could not find Physical Port (%s) in Chassis",
+                      pp_name);
+        goto ret;
+    }
+    /* Checks the duplication in gw_rec->vlan_map. */
+    for (i = 0; i < gw_rec->n_vlan_map; i++) {
+        if (gw_rec->key_vlan_map[i] == vlan) {
+            ds_put_format(&result, "vlan (%"PRId64") already been mapped to "
+                          "logical port (%s) in OVN-SB",
+                          vlan, gw_rec->value_vlan_map[i]);
+            goto ret;
+        }
+        if (!strcmp(lp_name, gw_rec->value_vlan_map[i])) {
+            ds_put_format(&result, "logical port (%s) already exists for vlan "
+                          "(%"PRId64") in OVN-SB",
+                          gw_rec->value_vlan_map[i], vlan);
+            goto ret;
+        }
+    }
+
+    /* Commits to vtep. */
     txn = ovsdb_idl_txn_create(ctx->vtep_idl);
     ovsdb_idl_txn_add_comment(txn,
                               "ovn-controller-gw: add vlan_binding: vlan (%"PRId64") "
-                              "to Logical Switch (%s)", vlan, ls_target->name);
+                              "to Logical Switch (%s)", vlan, ls_rec->name);
 
     int64_t *key_vlan_bindings;
     struct vteprec_logical_switch **value_vlan_bindings;
 
-    key_vlan_bindings = xmalloc(sizeof *key_vlan_bindings * (pp_target->n_vlan_bindings + 1));
-    value_vlan_bindings = xmalloc(sizeof *value_vlan_bindings * (pp_target->n_vlan_bindings + 1));
+    key_vlan_bindings = xmalloc(sizeof *key_vlan_bindings * (pp_rec->n_vlan_bindings + 1));
+    value_vlan_bindings = xmalloc(sizeof *value_vlan_bindings * (pp_rec->n_vlan_bindings + 1));
 
-    for (i = 0; i < pp_target->n_vlan_bindings; i++) {
-        key_vlan_bindings[i] = pp_target->key_vlan_bindings[i];
-        value_vlan_bindings[i] = pp_target->value_vlan_bindings[i];
+    for (i = 0; i < pp_rec->n_vlan_bindings; i++) {
+        key_vlan_bindings[i] = pp_rec->key_vlan_bindings[i];
+        value_vlan_bindings[i] = pp_rec->value_vlan_bindings[i];
     }
-    key_vlan_bindings[pp_target->n_vlan_bindings] = vlan;
-    value_vlan_bindings[pp_target->n_vlan_bindings] = ls_target;
+    key_vlan_bindings[pp_rec->n_vlan_bindings] = vlan;
+    value_vlan_bindings[pp_rec->n_vlan_bindings] = CONST_CAST(struct vteprec_logical_switch *, ls_rec);
 
-    vteprec_physical_port_set_vlan_bindings(pp_target, key_vlan_bindings,
+    vteprec_physical_port_set_vlan_bindings(pp_rec, key_vlan_bindings,
                                             value_vlan_bindings,
-                                            pp_target->n_vlan_bindings + 1);
+                                            pp_rec->n_vlan_bindings + 1);
 
     retval = ovsdb_idl_txn_commit_block(txn);
     if (retval != TXN_SUCCESS && retval != TXN_UNCHANGED) {
@@ -426,6 +458,40 @@ ovn_controller_gw_add_lport(struct unixctl_conn *conn, int argc OVS_UNUSED,
     ovsdb_idl_txn_destroy(txn);
     free(key_vlan_bindings);
     free(value_vlan_bindings);
+
+    /* Commits to ovn-sb. */
+    retval = TXN_TRY_AGAIN;
+    txn = ovsdb_idl_txn_create(ctx->ovnsb_idl);
+    ovsdb_idl_txn_add_comment(txn,
+                              "ovn-controller-gw: add vlan map: vlan (%"PRId64") "
+                              "to Logical Switch (%s)", vlan, lp_name);
+
+    int64_t *key_vlan_map;
+    const char **value_vlan_map;
+
+    key_vlan_map = xmalloc(sizeof *key_vlan_map * (gw_rec->n_vlan_map + 1));
+    value_vlan_map = xmalloc(sizeof *value_vlan_map * (gw_rec->n_vlan_map + 1));
+
+    for (i = 0; i < gw_rec->n_vlan_map; i++) {
+        key_vlan_map[i] = gw_rec->key_vlan_map[i];
+        value_vlan_map[i] = gw_rec->value_vlan_map[i];
+    }
+    key_vlan_map[gw_rec->n_vlan_map] = vlan;
+    value_vlan_map[gw_rec->n_vlan_map] = lp_name;
+
+    sbrec_gateway_set_vlan_map(gw_rec, key_vlan_map, value_vlan_map,
+                               gw_rec->n_vlan_map + 1);
+
+    retval = ovsdb_idl_txn_commit_block(txn);
+    if (retval != TXN_SUCCESS && retval != TXN_UNCHANGED) {
+        VLOG_INFO("Problem registering chassis: %s",
+                  ovsdb_idl_txn_status_to_string(retval));
+        poll_immediate_wake();
+    }
+
+    ovsdb_idl_txn_destroy(txn);
+    free(key_vlan_map);
+    free(value_vlan_map);
 
 ret:
     unixctl_command_reply(conn, ds_cstr(&result));
