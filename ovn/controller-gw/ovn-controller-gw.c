@@ -40,6 +40,7 @@
 
 #include "binding.h"
 #include "gateway.h"
+#include "pipeline.h"
 #include "ovn-controller-gw.h"
 
 VLOG_DEFINE_THIS_MODULE(ovn_gw);
@@ -163,6 +164,7 @@ main(int argc, char *argv[])
 
         gateway_run(&ctx);
         binding_run(&ctx);
+        pipeline_run(&ctx);
 
         unixctl_server_run(unixctl);
 
@@ -179,6 +181,7 @@ main(int argc, char *argv[])
     unixctl_server_destroy(unixctl);
     gateway_destroy(&ctx);
     binding_destroy(&ctx);
+    pipeline_destroy(&ctx);
 
     ovsdb_idl_destroy(ctx.vtep_idl);
     ovsdb_idl_destroy(ctx.ovnsb_idl);
@@ -300,7 +303,7 @@ ovn_controller_gw_add_lport(struct unixctl_conn *conn, int argc OVS_UNUSED,
     const char *pp_name = argv[3];
     const int64_t vlan = strtoull(argv[4], NULL, 0);
     struct ds result;
-    int retval = TXN_TRY_AGAIN;
+    int retval;
     int i;
 
     ds_init(&result);
