@@ -352,7 +352,7 @@ ovn_controller_gw_add_lport(struct unixctl_conn *conn, int argc OVS_UNUSED,
     const char *pp_name = argv[3];
     const int64_t vlan = strtoull(argv[4], NULL, 0);
     struct ds result;
-    int retval = TXN_TRY_AGAIN;
+    int retval;
     int i;
 
     ds_init(&result);
