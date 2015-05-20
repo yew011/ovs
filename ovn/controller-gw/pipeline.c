@@ -27,7 +27,7 @@
 #include "vtep/vtep-idl.h"
 #include "ovn-controller-gw.h"
 
-VLOG_DEFINE_THIS_MODULE(pipeline_gw);
+VLOG_DEFINE_THIS_MODULE(pipeline);
 
 /* One for each 'mac' in the binding. */
 struct mac_to_binding {

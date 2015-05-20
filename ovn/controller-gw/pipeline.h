@@ -14,8 +14,8 @@
  */
 
 
-#ifndef OVN_PIPELINE_GW_H
-#define OVN_PIPELINE_GW_H 1
+#ifndef OVN_PIPELINE_H
+#define OVN_PIPELINE_H 1
 
 struct controller_gw_ctx;
 
