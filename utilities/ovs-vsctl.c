@@ -52,59 +52,7 @@
 
 VLOG_DEFINE_THIS_MODULE(vsctl);
 
-/* vsctl_fatal() also logs the error, so it is preferred in this file. */
-#define ovs_fatal please_use_vsctl_fatal_instead_of_ovs_fatal
-
 struct vsctl_context;
-
-/* A command supported by ovs-vsctl. */
-struct vsctl_command_syntax {
-    const char *name;           /* e.g. "add-br" */
-    int min_args;               /* Min number of arguments following name. */
-    int max_args;               /* Max number of arguments following name. */
-
-    /* Names that roughly describe the arguments that the command
-     * uses.  These should be similar to the names displayed in the
-     * man page or in the help output. */
-    const char *arguments;
-
-    /* If nonnull, calls ovsdb_idl_add_column() or ovsdb_idl_add_table() for
-     * each column or table in ctx->idl that it uses. */
-    void (*prerequisites)(struct vsctl_context *ctx);
-
-    /* Does the actual work of the command and puts the command's output, if
-     * any, in ctx->output or ctx->table.
-     *
-     * Alternatively, if some prerequisite of the command is not met and the
-     * caller should wait for something to change and then retry, it may set
-     * ctx->try_again to true.  (Only the "wait-until" command currently does
-     * this.) */
-    void (*run)(struct vsctl_context *ctx);
-
-    /* If nonnull, called after the transaction has been successfully
-     * committed.  ctx->output is the output from the "run" function, which
-     * this function may modify and otherwise postprocess as needed.  (Only the
-     * "create" command currently does any postprocessing.) */
-    void (*postprocess)(struct vsctl_context *ctx);
-
-    /* A comma-separated list of supported options, e.g. "--a,--b", or the
-     * empty string if the command does not support any options. */
-    const char *options;
-
-    enum { RO, RW } mode;       /* Does this command modify the database? */
-};
-
-struct vsctl_command {
-    /* Data that remains constant after initialization. */
-    const struct vsctl_command_syntax *syntax;
-    int argc;
-    char **argv;
-    struct shash options;
-
-    /* Data modified by commands. */
-    struct ds output;
-    struct table *table;
-};
 
 /* --db: The database server to contact. */
 static const char *db;
@@ -134,30 +82,10 @@ static bool retry;
 /* Format for table output. */
 static struct table_style table_style = TABLE_STYLE_DEFAULT;
 
-/* All supported commands. */
-static const struct vsctl_command_syntax *get_all_commands(void);
-
-/* The IDL we're using and the current transaction, if any.
- * This is for use by vsctl_exit() only, to allow it to clean up.
- * Other code should use its context arguments. */
-static struct ovsdb_idl *the_idl;
-static struct ovsdb_idl_txn *the_idl_txn;
-
-OVS_NO_RETURN static void vsctl_exit(int status);
-OVS_NO_RETURN static void vsctl_fatal(const char *, ...) OVS_PRINTF_FORMAT(1, 2);
-static char *default_db(void);
+static void vsctl_cmd_init(void);
 OVS_NO_RETURN static void usage(void);
-OVS_NO_RETURN static void print_vsctl_commands(void);
-OVS_NO_RETURN static void print_vsctl_options(const struct option *options);
 static void parse_options(int argc, char *argv[], struct shash *local_options);
 static bool might_write_to_db(char **argv);
-
-static struct vsctl_command *parse_commands(int argc, char *argv[],
-                                            struct shash *local_options,
-                                            size_t *n_commandsp);
-static void parse_command(int argc, char *argv[], struct shash *local_options,
-                          struct vsctl_command *);
-static const struct vsctl_command_syntax *find_command(const char *name);
 static void run_prerequisites(struct vsctl_command[], size_t n_commands,
                               struct ovsdb_idl *);
 static void do_vsctl(const char *args, struct vsctl_command *, size_t n,
@@ -206,7 +134,7 @@ main(int argc, char *argv[])
 {
     extern struct vlog_module VLM_reconnect;
     struct ovsdb_idl *idl;
-    struct vsctl_command *commands;
+    struct ctl_command *commands;
     struct shash local_options;
     unsigned int seqno;
     size_t n_commands;
@@ -218,6 +146,8 @@ main(int argc, char *argv[])
     vlog_set_levels(&VLM_reconnect, VLF_ANY_DESTINATION, VLL_WARN);
     ovsrec_init();
 
+    vsctl_cmd_init();
+
     /* Log our arguments.  This is often valuable for debugging systems. */
     args = process_escape_args(argv);
     VLOG(might_write_to_db(argv) ? VLL_INFO : VLL_DBG, "Called as %s", args);
@@ -225,8 +155,8 @@ main(int argc, char *argv[])
     /* Parse command line. */
     shash_init(&local_options);
     parse_options(argc, argv, &local_options);
-    commands = parse_commands(argc - optind, argv + optind, &local_options,
-                              &n_commands);
+    commands = ctl_parse_commands(argc - optind, argv + optind, &local_options,
+                                  &n_commands);
 
     if (timeout) {
         time_alarm(timeout);
@@ -248,7 +178,7 @@ main(int argc, char *argv[])
         ovsdb_idl_run(idl);
         if (!ovsdb_idl_is_alive(idl)) {
             int retval = ovsdb_idl_get_last_error(idl);
-            vsctl_fatal("%s: database connection failed (%s)",
+            ctl_fatal("%s: database connection failed (%s)",
                         db, ovs_retval_to_string(retval));
         }
 
@@ -262,30 +192,6 @@ main(int argc, char *argv[])
             poll_block();
         }
     }
-}
-
-static struct option *
-find_option(const char *name, struct option *options, size_t n_options)
-{
-    size_t i;
-
-    for (i = 0; i < n_options; i++) {
-        if (!strcmp(options[i].name, name)) {
-            return &options[i];
-        }
-    }
-    return NULL;
-}
-
-static struct option *
-add_option(struct option **optionsp, size_t *n_optionsp,
-           size_t *allocated_optionsp)
-{
-    if (*n_optionsp >= *allocated_optionsp) {
-        *optionsp = x2nrealloc(*optionsp, allocated_optionsp,
-                               sizeof **optionsp);
-    }
-    return &(*optionsp)[(*n_optionsp)++];
 }
 
 static void
@@ -343,48 +249,7 @@ parse_options(int argc, char *argv[], struct shash *local_options)
     options = xmemdup(global_long_options, sizeof global_long_options);
     allocated_options = ARRAY_SIZE(global_long_options);
     n_options = n_global_long_options;
-    for (p = get_all_commands(); p->name; p++) {
-        if (p->options[0]) {
-            char *save_ptr = NULL;
-            char *name;
-            char *s;
-
-            s = xstrdup(p->options);
-            for (name = strtok_r(s, ",", &save_ptr); name != NULL;
-                 name = strtok_r(NULL, ",", &save_ptr)) {
-                char *equals;
-                int has_arg;
-
-                ovs_assert(name[0] == '-' && name[1] == '-' && name[2]);
-                name += 2;
-
-                equals = strchr(name, '=');
-                if (equals) {
-                    has_arg = required_argument;
-                    *equals = '\0';
-                } else {
-                    has_arg = no_argument;
-                }
-
-                o = find_option(name, options, n_options);
-                if (o) {
-                    ovs_assert(o - options >= n_global_long_options);
-                    ovs_assert(o->has_arg == has_arg);
-                } else {
-                    o = add_option(&options, &n_options, &allocated_options);
-                    o->name = xstrdup(name);
-                    o->has_arg = has_arg;
-                    o->flag = NULL;
-                    o->val = OPT_LOCAL;
-                }
-            }
-
-            free(s);
-        }
-    }
-    o = add_option(&options, &n_options, &allocated_options);
-    memset(o, 0, sizeof *o);
-
+    ctl_add_cmd_options(&options, &n_options, &allocated_options);
     table_style.format = TF_LIST;
 
     for (;;) {
@@ -419,7 +284,7 @@ parse_options(int argc, char *argv[], struct shash *local_options)
 
         case OPT_LOCAL:
             if (shash_find(local_options, options[idx].name)) {
-                vsctl_fatal("'%s' option specified multiple times",
+                ctl_fatal("'%s' option specified multiple times",
                             options[idx].name);
             }
             shash_add_nocopy(local_options,
@@ -431,10 +296,10 @@ parse_options(int argc, char *argv[], struct shash *local_options)
             usage();
 
         case OPT_COMMANDS:
-            print_vsctl_commands();
+            ctl_print_commands();
 
         case OPT_OPTIONS:
-            print_vsctl_options(global_long_options);
+            ctl_print_options(global_long_options);
 
         case 'V':
             ovs_print_version(0, 0);
@@ -444,7 +309,7 @@ parse_options(int argc, char *argv[], struct shash *local_options)
         case 't':
             timeout = strtoul(optarg, NULL, 10);
             if (timeout < 0) {
-                vsctl_fatal("value %s on -t or --timeout is invalid",
+                ctl_fatal("value %s on -t or --timeout is invalid",
                             optarg);
             }
             break;
@@ -472,189 +337,13 @@ parse_options(int argc, char *argv[], struct shash *local_options)
     free(short_options);
 
     if (!db) {
-        db = default_db();
+        db = ctl_default_db();
     }
 
     for (i = n_global_long_options; options[i].name; i++) {
         free(CONST_CAST(char *, options[i].name));
     }
     free(options);
-}
-
-static struct vsctl_command *
-parse_commands(int argc, char *argv[], struct shash *local_options,
-               size_t *n_commandsp)
-{
-    struct vsctl_command *commands;
-    size_t n_commands, allocated_commands;
-    int i, start;
-
-    commands = NULL;
-    n_commands = allocated_commands = 0;
-
-    for (start = i = 0; i <= argc; i++) {
-        if (i == argc || !strcmp(argv[i], "--")) {
-            if (i > start) {
-                if (n_commands >= allocated_commands) {
-                    struct vsctl_command *c;
-
-                    commands = x2nrealloc(commands, &allocated_commands,
-                                          sizeof *commands);
-                    for (c = commands; c < &commands[n_commands]; c++) {
-                        shash_moved(&c->options);
-                    }
-                }
-                parse_command(i - start, &argv[start], local_options,
-                              &commands[n_commands++]);
-            } else if (!shash_is_empty(local_options)) {
-                vsctl_fatal("missing command name (use --help for help)");
-            }
-            start = i + 1;
-        }
-    }
-    if (!n_commands) {
-        vsctl_fatal("missing command name (use --help for help)");
-    }
-    *n_commandsp = n_commands;
-    return commands;
-}
-
-static void
-parse_command(int argc, char *argv[], struct shash *local_options,
-              struct vsctl_command *command)
-{
-    const struct vsctl_command_syntax *p;
-    struct shash_node *node;
-    int n_arg;
-    int i;
-
-    shash_init(&command->options);
-    shash_swap(local_options, &command->options);
-    for (i = 0; i < argc; i++) {
-        const char *option = argv[i];
-        const char *equals;
-        char *key, *value;
-
-        if (option[0] != '-') {
-            break;
-        }
-
-        equals = strchr(option, '=');
-        if (equals) {
-            key = xmemdup0(option, equals - option);
-            value = xstrdup(equals + 1);
-        } else {
-            key = xstrdup(option);
-            value = NULL;
-        }
-
-        if (shash_find(&command->options, key)) {
-            vsctl_fatal("'%s' option specified multiple times", argv[i]);
-        }
-        shash_add_nocopy(&command->options, key, value);
-    }
-    if (i == argc) {
-        vsctl_fatal("missing command name (use --help for help)");
-    }
-
-    p = find_command(argv[i]);
-    if (!p) {
-        vsctl_fatal("unknown command '%s'; use --help for help", argv[i]);
-    }
-
-    SHASH_FOR_EACH (node, &command->options) {
-        const char *s = strstr(p->options, node->name);
-        int end = s ? s[strlen(node->name)] : EOF;
-
-        if (end != '=' && end != ',' && end != ' ' && end != '\0') {
-            vsctl_fatal("'%s' command has no '%s' option",
-                        argv[i], node->name);
-        }
-        if ((end == '=') != (node->data != NULL)) {
-            if (end == '=') {
-                vsctl_fatal("missing argument to '%s' option on '%s' "
-                            "command", node->name, argv[i]);
-            } else {
-                vsctl_fatal("'%s' option on '%s' does not accept an "
-                            "argument", node->name, argv[i]);
-            }
-        }
-    }
-
-    n_arg = argc - i - 1;
-    if (n_arg < p->min_args) {
-        vsctl_fatal("'%s' command requires at least %d arguments",
-                    p->name, p->min_args);
-    } else if (n_arg > p->max_args) {
-        int j;
-
-        for (j = i + 1; j < argc; j++) {
-            if (argv[j][0] == '-') {
-                vsctl_fatal("'%s' command takes at most %d arguments "
-                            "(note that options must precede command "
-                            "names and follow a \"--\" argument)",
-                            p->name, p->max_args);
-            }
-        }
-
-        vsctl_fatal("'%s' command takes at most %d arguments",
-                    p->name, p->max_args);
-    }
-
-    command->syntax = p;
-    command->argc = n_arg + 1;
-    command->argv = &argv[i];
-}
-
-/* Returns the "struct vsctl_command_syntax" for a given command 'name', or a
- * null pointer if there is none. */
-static const struct vsctl_command_syntax *
-find_command(const char *name)
-{
-    static struct shash commands = SHASH_INITIALIZER(&commands);
-
-    if (shash_is_empty(&commands)) {
-        const struct vsctl_command_syntax *p;
-
-        for (p = get_all_commands(); p->name; p++) {
-            shash_add_assert(&commands, p->name, p);
-        }
-    }
-
-    return shash_find_data(&commands, name);
-}
-
-static void
-vsctl_fatal(const char *format, ...)
-{
-    char *message;
-    va_list args;
-
-    va_start(args, format);
-    message = xvasprintf(format, args);
-    va_end(args);
-
-    vlog_set_levels(&VLM_vsctl, VLF_CONSOLE, VLL_OFF);
-    VLOG_ERR("%s", message);
-    ovs_error(0, "%s", message);
-    vsctl_exit(EXIT_FAILURE);
-}
-
-/* Frees the current transaction and the underlying IDL and then calls
- * exit(status).
- *
- * Freeing the transaction and the IDL is not strictly necessary, but it makes
- * for a clean memory leak report from valgrind in the normal case.  That makes
- * it easier to notice real memory leaks. */
-static void
-vsctl_exit(int status)
-{
-    if (the_idl_txn) {
-        ovsdb_idl_txn_abort(the_idl_txn);
-        ovsdb_idl_txn_destroy(the_idl_txn);
-    }
-    ovsdb_idl_destroy(the_idl);
-    exit(status);
 }
 
 static void
@@ -719,18 +408,7 @@ Auto Attach commands:\n\
 Switch commands:\n\
   emer-reset                  reset switch to known good state\n\
 \n\
-Database commands:\n\
-  list TBL [REC]              list RECord (or all records) in TBL\n\
-  find TBL CONDITION...       list records satisfying CONDITION in TBL\n\
-  get TBL REC COL[:KEY]       print values of COLumns in RECord in TBL\n\
-  set TBL REC COL[:KEY]=VALUE set COLumn values in RECord in TBL\n\
-  add TBL REC COL [KEY=]VALUE add (KEY=)VALUE to COLumn in RECord in TBL\n\
-  remove TBL REC COL [KEY=]VALUE  remove (KEY=)VALUE from COLumn\n\
-  clear TBL REC COL           clear values from COLumn in RECord in TBL\n\
-  create TBL COL[:KEY]=VALUE  create and initialize new record\n\
-  destroy TBL REC             delete RECord from TBL\n\
-  wait-until TBL REC [COL[:KEY]=VALUE]  wait until condition is true\n\
-Potentially unsafe database commands require --force option.\n\
+%s
 \n\
 Options:\n\
   --db=DATABASE               connect to DATABASE\n\
@@ -740,7 +418,7 @@ Options:\n\
   -t, --timeout=SECS          wait at most SECS seconds for ovs-vswitchd\n\
   --dry-run                   do not commit changes to database\n\
   --oneline                   print exactly one line of output per command\n",
-           program_name, program_name, default_db());
+           program_name, program_name, ctl_get_db_cmd_usage(), default_db());
     vlog_usage();
     printf("\
   --no-syslog             equivalent to --verbose=vsctl:syslog:warn\n");
@@ -750,142 +428,6 @@ Other options:\n\
   -h, --help                  display this help message\n\
   -V, --version               display version information\n");
     exit(EXIT_SUCCESS);
-}
-
-/* Converts the command arguments into format that can be parsed by
- * bash completion script.
- *
- * Therein, arguments will be attached with following prefixes:
- *
- *    !argument :: The argument is required
- *    ?argument :: The argument is optional
- *    *argument :: The argument may appear any number (0 or more) times
- *    +argument :: The argument may appear one or more times
- *
- */
-static void
-print_command_arguments(const struct vsctl_command_syntax *command)
-{
-    /*
-     * The argument string is parsed in reverse.  We use a stack 'oew_stack' to
-     * keep track of nested optionals.  Whenever a ']' is encountered, we push
-     * a bit to 'oew_stack'.  The bit is set to 1 if the ']' is not nested.
-     * Subsequently, we pop an entry everytime '[' is met.
-     *
-     * We use 'whole_word_is_optional' value to decide whether or not a ! or +
-     * should be added on encountering a space: if the optional surrounds the
-     * whole word then it shouldn't be, but if it is only a part of the word
-     * (i.e. [key=]value), it should be.
-     */
-    uint32_t oew_stack = 0;
-
-    const char *arguments = command->arguments;
-    int length = strlen(arguments);
-    if (!length) {
-        return;
-    }
-
-    /* Output buffer, written backward from end. */
-    char *output = xmalloc(2 * length);
-    char *outp = output + 2 * length;
-    *--outp = '\0';
-
-    bool in_repeated = false;
-    bool whole_word_is_optional = false;
-
-    for (const char *inp = arguments + length; inp > arguments; ) {
-        switch (*--inp) {
-        case ']':
-            oew_stack <<= 1;
-            if (inp[1] == '\0' || inp[1] == ' ' || inp[1] == '.') {
-                oew_stack |= 1;
-            }
-            break;
-        case '[':
-            /* Checks if the whole word is optional, and sets the
-             * 'whole_word_is_optional' accordingly. */
-            if ((inp == arguments || inp[-1] == ' ') && oew_stack & 1) {
-                *--outp = in_repeated ? '*' : '?';
-                whole_word_is_optional = true;
-            } else {
-                *--outp = '?';
-                whole_word_is_optional = false;
-            }
-            oew_stack >>= 1;
-            break;
-        case ' ':
-            if (!whole_word_is_optional) {
-                *--outp = in_repeated ? '+' : '!';
-            }
-            *--outp = ' ';
-            in_repeated = false;
-            whole_word_is_optional = false;
-            break;
-        case '.':
-            in_repeated = true;
-            break;
-        default:
-            *--outp = *inp;
-            break;
-        }
-    }
-    if (arguments[0] != '[' && outp != output + 2 * length - 1) {
-        *--outp = in_repeated ? '+' : '!';
-    }
-    printf("%s", outp);
-    free(output);
-}
-
-static void
-print_vsctl_commands(void)
-{
-    const struct vsctl_command_syntax *p;
-
-    for (p = get_all_commands(); p->name; p++) {
-        char *options = xstrdup(p->options);
-        char *options_begin = options;
-        char *item;
-
-        for (item = strsep(&options, ","); item != NULL;
-             item = strsep(&options, ",")) {
-            if (item[0] != '\0') {
-                printf("[%s] ", item);
-            }
-        }
-        printf(",%s,", p->name);
-        print_command_arguments(p);
-        printf("\n");
-
-        free(options_begin);
-    }
-
-    exit(EXIT_SUCCESS);
-}
-
-static void
-print_vsctl_options(const struct option *options)
-{
-    for (; options->name; options++) {
-        const struct option *o = options;
-
-        printf("--%s%s\n", o->name, o->has_arg ? "=ARG" : "");
-        if (o->flag == NULL && o->val > 0 && o->val <= UCHAR_MAX) {
-            printf("-%c%s\n", o->val, o->has_arg ? " ARG" : "");
-        }
-    }
-
-    exit(EXIT_SUCCESS);
-}
-
-
-static char *
-default_db(void)
-{
-    static char *def;
-    if (!def) {
-        def = xasprintf("unix:%s/db.sock", ovs_rundir());
-    }
-    return def;
 }
 
 /* Returns true if it looks like this set of arguments might modify the
@@ -1322,19 +864,19 @@ check_conflicts(struct vsctl_context *ctx, const char *name,
     verify_ports(ctx);
 
     if (shash_find(&ctx->bridges, name)) {
-        vsctl_fatal("%s because a bridge named %s already exists",
+        ctl_fatal("%s because a bridge named %s already exists",
                     msg, name);
     }
 
     port = shash_find_data(&ctx->ports, name);
     if (port) {
-        vsctl_fatal("%s because a port named %s already exists on "
+        ctl_fatal("%s because a port named %s already exists on "
                     "bridge %s", msg, name, port->bridge->name);
     }
 
     iface = shash_find_data(&ctx->ifaces, name);
     if (iface) {
-        vsctl_fatal("%s because an interface named %s already exists "
+        ctl_fatal("%s because an interface named %s already exists "
                     "on bridge %s", msg, name, iface->port->bridge->name);
     }
 
@@ -1350,7 +892,7 @@ find_bridge(struct vsctl_context *ctx, const char *name, bool must_exist)
 
     br = shash_find_data(&ctx->bridges, name);
     if (must_exist && !br) {
-        vsctl_fatal("no bridge named %s", name);
+        ctl_fatal("no bridge named %s", name);
     }
     ovsrec_open_vswitch_verify_bridges(ctx->ovs);
     return br;
@@ -1361,7 +903,7 @@ find_real_bridge(struct vsctl_context *ctx, const char *name, bool must_exist)
 {
     struct vsctl_bridge *br = find_bridge(ctx, name, must_exist);
     if (br && br->parent) {
-        vsctl_fatal("%s is a fake bridge", name);
+        ctl_fatal("%s is a fake bridge", name);
     }
     return br;
 }
@@ -1378,7 +920,7 @@ find_port(struct vsctl_context *ctx, const char *name, bool must_exist)
         port = NULL;
     }
     if (must_exist && !port) {
-        vsctl_fatal("no port named %s", name);
+        ctl_fatal("no port named %s", name);
     }
     verify_ports(ctx);
     return port;
@@ -1396,7 +938,7 @@ find_iface(struct vsctl_context *ctx, const char *name, bool must_exist)
         iface = NULL;
     }
     if (must_exist && !iface) {
-        vsctl_fatal("no interface named %s", name);
+        ctl_fatal("no interface named %s", name);
     }
     verify_ports(ctx);
     return iface;
@@ -1762,10 +1304,10 @@ cmd_add_br(struct vsctl_context *ctx)
         parent_name = ctx->argv[2];
         vlan = atoi(ctx->argv[3]);
         if (vlan < 0 || vlan > 4095) {
-            vsctl_fatal("%s: vlan must be between 0 and 4095", ctx->argv[0]);
+            ctl_fatal("%s: vlan must be between 0 and 4095", ctx->argv[0]);
         }
     } else {
-        vsctl_fatal("'%s' command takes exactly 1 or 3 arguments",
+        ctl_fatal("'%s' command takes exactly 1 or 3 arguments",
                     ctx->argv[0]);
     }
 
@@ -1777,22 +1319,22 @@ cmd_add_br(struct vsctl_context *ctx)
         if (br) {
             if (!parent_name) {
                 if (br->parent) {
-                    vsctl_fatal("\"--may-exist add-br %s\" but %s is "
+                    ctl_fatal("\"--may-exist add-br %s\" but %s is "
                                 "a VLAN bridge for VLAN %d",
                                 br_name, br_name, br->vlan);
                 }
             } else {
                 if (!br->parent) {
-                    vsctl_fatal("\"--may-exist add-br %s %s %d\" but %s "
+                    ctl_fatal("\"--may-exist add-br %s %s %d\" but %s "
                                 "is not a VLAN bridge",
                                 br_name, parent_name, vlan, br_name);
                 } else if (strcmp(br->parent->name, parent_name)) {
-                    vsctl_fatal("\"--may-exist add-br %s %s %d\" but %s "
+                    ctl_fatal("\"--may-exist add-br %s %s %d\" but %s "
                                 "has the wrong parent %s",
                                 br_name, parent_name, vlan,
                                 br_name, br->parent->name);
                 } else if (br->vlan != vlan) {
-                    vsctl_fatal("\"--may-exist add-br %s %s %d\" but %s "
+                    ctl_fatal("\"--may-exist add-br %s %s %d\" but %s "
                                 "is a VLAN bridge for the wrong VLAN %d",
                                 br_name, parent_name, vlan, br_name, br->vlan);
                 }
@@ -1829,14 +1371,14 @@ cmd_add_br(struct vsctl_context *ctx)
 
         parent = find_bridge(ctx, parent_name, false);
         if (parent && parent->parent) {
-            vsctl_fatal("cannot create bridge with fake bridge as parent");
+            ctl_fatal("cannot create bridge with fake bridge as parent");
         }
         if (!parent) {
-            vsctl_fatal("parent bridge %s does not exist", parent_name);
+            ctl_fatal("parent bridge %s does not exist", parent_name);
         }
         conflict = find_vlan_bridge(parent, vlan);
         if (conflict) {
-            vsctl_fatal("bridge %s already has a child VLAN bridge %s "
+            ctl_fatal("bridge %s already has a child VLAN bridge %s "
                         "on VLAN %d", parent_name, conflict->name, vlan);
         }
         br = parent->br_cfg;
@@ -1955,7 +1497,7 @@ cmd_br_exists(struct vsctl_context *ctx)
 {
     vsctl_context_populate_cache(ctx);
     if (!find_bridge(ctx, ctx->argv[1], false)) {
-        vsctl_exit(2);
+        ctl_exit(2);
     }
 }
 
@@ -2117,7 +1659,7 @@ add_port(struct vsctl_context *ctx,
 
             if (strcmp(vsctl_port->bridge->name, br_name)) {
                 char *command = vsctl_context_to_string(ctx);
-                vsctl_fatal("\"%s\" but %s is actually attached to bridge %s",
+                ctl_fatal("\"%s\" but %s is actually attached to bridge %s",
                             command, port_name, vsctl_port->bridge->name);
             }
 
@@ -2125,7 +1667,7 @@ add_port(struct vsctl_context *ctx,
                 char *have_names_string = svec_join(&have_names, ", ", "");
                 char *command = vsctl_context_to_string(ctx);
 
-                vsctl_fatal("\"%s\" but %s actually has interface(s) %s",
+                ctl_fatal("\"%s\" but %s actually has interface(s) %s",
                             command, port_name, have_names_string);
             }
 
@@ -2201,7 +1743,7 @@ cmd_add_bond(struct vsctl_context *ctx)
         }
     }
     if (n_ifaces < 2) {
-        vsctl_fatal("add-bond requires at least 2 interfaces, but only "
+        ctl_fatal("add-bond requires at least 2 interfaces, but only "
                     "%d were specified", n_ifaces);
     }
 
@@ -2221,7 +1763,7 @@ cmd_del_port(struct vsctl_context *ctx)
     vsctl_context_populate_cache(ctx);
     if (find_bridge(ctx, target, false)) {
         if (must_exist) {
-            vsctl_fatal("cannot delete port %s because it is the local port "
+            ctl_fatal("cannot delete port %s because it is the local port "
                         "for bridge %s (deleting this port requires deleting "
                         "the entire bridge)", target, target);
         }
@@ -2239,7 +1781,7 @@ cmd_del_port(struct vsctl_context *ctx)
             }
         }
         if (must_exist && !port) {
-            vsctl_fatal("no port or interface named %s", target);
+            ctl_fatal("no port or interface named %s", target);
         }
     }
 
@@ -2250,12 +1792,12 @@ cmd_del_port(struct vsctl_context *ctx)
             bridge = find_bridge(ctx, ctx->argv[1], true);
             if (port->bridge != bridge) {
                 if (port->bridge->parent == bridge) {
-                    vsctl_fatal("bridge %s does not have a port %s (although "
+                    ctl_fatal("bridge %s does not have a port %s (although "
                                 "its parent bridge %s does)",
                                 ctx->argv[1], ctx->argv[2],
                                 bridge->parent->name);
                 } else {
-                    vsctl_fatal("bridge %s does not have a port %s",
+                    ctl_fatal("bridge %s does not have a port %s",
                                 ctx->argv[1], ctx->argv[2]);
                 }
             }
@@ -2493,7 +2035,7 @@ cmd_set_fail_mode(struct vsctl_context *ctx)
     br = find_real_bridge(ctx, ctx->argv[1], true);
 
     if (strcmp(fail_mode, "standalone") && strcmp(fail_mode, "secure")) {
-        vsctl_fatal("fail-mode must be \"standalone\" or \"secure\"");
+        ctl_fatal("fail-mode must be \"standalone\" or \"secure\"");
     }
 
     ovsrec_bridge_set_fail_mode(br->br_cfg, fail_mode);
@@ -2708,13 +2250,13 @@ cmd_add_aa_mapping(struct vsctl_context *ctx)
 
     isid = strtoull(ctx->argv[2], &nptr, 10);
     if (nptr == ctx->argv[2] || nptr == NULL) {
-        vsctl_fatal("Invalid argument %s", ctx->argv[2]);
+        ctl_fatal("Invalid argument %s", ctx->argv[2]);
         return;
     }
 
     vlan = strtoull(ctx->argv[3], &nptr, 10);
     if (nptr == ctx->argv[3] || nptr == NULL) {
-        vsctl_fatal("Invalid argument %s", ctx->argv[3]);
+        ctl_fatal("Invalid argument %s", ctx->argv[3]);
         return;
     }
 
@@ -2767,13 +2309,13 @@ cmd_del_aa_mapping(struct vsctl_context *ctx)
 
     isid = strtoull(ctx->argv[2], &nptr, 10);
     if (nptr == ctx->argv[2] || nptr == NULL) {
-        vsctl_fatal("Invalid argument %s", ctx->argv[2]);
+        ctl_fatal("Invalid argument %s", ctx->argv[2]);
         return;
     }
 
     vlan = strtoull(ctx->argv[3], &nptr, 10);
     if (nptr == ctx->argv[3] || nptr == NULL) {
-        vsctl_fatal("Invalid argument %s", ctx->argv[3]);
+        ctl_fatal("Invalid argument %s", ctx->argv[3]);
         return;
     }
 
@@ -2848,20 +2390,7 @@ cmd_get_aa_mapping(struct vsctl_context *ctx)
 }
 
 
-/* Parameter commands. */
-
-struct vsctl_row_id {
-    const struct ovsdb_idl_table_class *table;
-    const struct ovsdb_idl_column *name_column;
-    const struct ovsdb_idl_column *uuid_column;
-};
-
-struct vsctl_table_class {
-    struct ovsdb_idl_table_class *class;
-    struct vsctl_row_id row_ids[2];
-};
-
-static const struct vsctl_table_class tables[] = {
+const struct ctl_table_class tables[] = {
     {&ovsrec_table_bridge,
      {{&ovsrec_table_bridge, &ovsrec_bridge_col_name, NULL},
       {&ovsrec_table_flow_sample_collector_set, NULL,
@@ -2943,7 +2472,7 @@ static void
 die_if_error(char *error)
 {
     if (error) {
-        vsctl_fatal("%s", error);
+        ctl_fatal("%s", error);
     }
 }
 
@@ -2991,9 +2520,9 @@ get_table(const char *table_name)
     if (best_match) {
         return best_match;
     } else if (best_score) {
-        vsctl_fatal("multiple table names match \"%s\"", table_name);
+        ctl_fatal("multiple table names match \"%s\"", table_name);
     } else {
-        vsctl_fatal("unknown table \"%s\"", table_name);
+        ctl_fatal("unknown table \"%s\"", table_name);
     }
 }
 
@@ -3054,7 +2583,7 @@ get_row_by_id(struct vsctl_context *ctx, const struct vsctl_table_class *table,
                                  OVSDB_TYPE_STRING, OVSDB_TYPE_VOID);
             if (name->n == 1 && !strcmp(name->keys[0].string, record_id)) {
                 if (referrer) {
-                    vsctl_fatal("multiple rows in %s match \"%s\"",
+                    ctl_fatal("multiple rows in %s match \"%s\"",
                                 table->class->name, record_id);
                 }
                 referrer = row;
@@ -3080,7 +2609,7 @@ get_row_by_id(struct vsctl_context *ctx, const struct vsctl_table_class *table,
         final = referrer;
     }
 
-    return final;
+0    return final;
 }
 
 static const struct ovsdb_idl_row *
@@ -3106,7 +2635,7 @@ get_row (struct vsctl_context *ctx,
         }
     }
     if (must_exist && !row) {
-        vsctl_fatal("no row \"%s\" in table %s",
+        ctl_fatal("no row \"%s\" in table %s",
                     record_id, table->class->name);
     }
     return row;
@@ -3149,7 +2678,7 @@ create_symbol(struct ovsdb_symbol_table *symtab, const char *id, bool *newp)
     struct ovsdb_symbol *symbol;
 
     if (id[0] != '@') {
-        vsctl_fatal("row id \"%s\" does not begin with \"@\"", id);
+        ctl_fatal("row id \"%s\" does not begin with \"@\"", id);
     }
 
     if (newp) {
@@ -3158,7 +2687,7 @@ create_symbol(struct ovsdb_symbol_table *symtab, const char *id, bool *newp)
 
     symbol = ovsdb_symbol_table_insert(symtab, id);
     if (symbol->created) {
-        vsctl_fatal("row id \"%s\" may only be specified on one --id option",
+        ctl_fatal("row id \"%s\" may only be specified on one --id option",
                     id);
     }
     symbol->created = true;
@@ -3326,7 +2855,7 @@ pre_parse_column_key_value(struct vsctl_context *ctx,
     p = arg;
     die_if_error(ovsdb_token_parse(&p, &column_name));
     if (column_name[0] == '\0') {
-        vsctl_fatal("%s: missing column name", arg);
+        ctl_fatal("%s: missing column name", arg);
     }
 
     pre_get_column(ctx, table, column_name, &column);
@@ -3340,7 +2869,7 @@ check_mutable(const struct ovsdb_idl_row *row,
               const struct ovsdb_idl_column *column)
 {
     if (!ovsdb_idl_is_mutable(row, column)) {
-        vsctl_fatal("cannot modify read-only column %s in table %s",
+        ctl_fatal("cannot modify read-only column %s in table %s",
                     column->name, row->table->class->name);
     }
 }
@@ -3386,7 +2915,7 @@ cmd_get(struct vsctl_context *ctx)
     int i;
 
     if (id && !must_exist) {
-        vsctl_fatal("--if-exists and --id may not be specified together");
+        ctl_fatal("--if-exists and --id may not be specified together");
     }
 
     table = get_table(table_name);
@@ -3401,7 +2930,7 @@ cmd_get(struct vsctl_context *ctx)
 
         symbol = create_symbol(ctx->symtab, id, &new);
         if (!new) {
-            vsctl_fatal("row id \"%s\" specified on \"get\" command was used "
+            ctl_fatal("row id \"%s\" specified on \"get\" command was used "
                         "before it was defined", id);
         }
         symbol->uuid = row->uuid;
@@ -3435,7 +2964,7 @@ cmd_get(struct vsctl_context *ctx)
             unsigned int idx;
 
             if (column->type.value.type == OVSDB_TYPE_VOID) {
-                vsctl_fatal("cannot specify key to get for non-map column %s",
+                ctl_fatal("cannot specify key to get for non-map column %s",
                             column->name);
             }
 
@@ -3447,7 +2976,7 @@ cmd_get(struct vsctl_context *ctx)
                                        column->type.key.type);
             if (idx == UINT_MAX) {
                 if (must_exist) {
-                    vsctl_fatal("no key \"%s\" in %s record \"%s\" column %s",
+                    ctl_fatal("no key \"%s\" in %s record \"%s\" column %s",
                                 key_string, table->class->name, record_id,
                                 column->name);
                 }
@@ -3509,7 +3038,7 @@ parse_column_names(const char *column_names,
         free(s);
 
         if (!n_columns) {
-            vsctl_fatal("must specify at least one column name");
+            ctl_fatal("must specify at least one column name");
         }
     }
     *columnsp = columns;
@@ -3705,7 +3234,7 @@ set_column(const struct vsctl_table_class *table,
                                    NULL, NULL, 0, &value_string);
     die_if_error(error);
     if (!value_string) {
-        vsctl_fatal("%s: missing value", arg);
+        ctl_fatal("%s: missing value", arg);
     }
     check_mutable(row, column);
 
@@ -3714,7 +3243,7 @@ set_column(const struct vsctl_table_class *table,
         struct ovsdb_datum datum;
 
         if (column->type.value.type == OVSDB_TYPE_VOID) {
-            vsctl_fatal("cannot specify key to set for non-map column %s",
+            ctl_fatal("cannot specify key to set for non-map column %s",
                         column->name);
         }
 
@@ -3817,7 +3346,7 @@ cmd_add(struct vsctl_context *ctx)
         ovsdb_datum_destroy(&add, type);
     }
     if (old.n > type->n_max) {
-        vsctl_fatal("\"add\" operation would put %u %s in column %s of "
+        ctl_fatal("\"add\" operation would put %u %s in column %s of "
                     "table %s but the maximum number is %u",
                     old.n,
                     type->value.type == OVSDB_TYPE_VOID ? "values" : "pairs",
@@ -3883,14 +3412,14 @@ cmd_remove(struct vsctl_context *ctx)
                 die_if_error(ovsdb_datum_from_string(
                                  &rm, &rm_type, ctx->argv[i], ctx->symtab));
             } else {
-                vsctl_fatal("%s", error);
+                ctl_fatal("%s", error);
             }
         }
         ovsdb_datum_subtract(&old, type, &rm, &rm_type);
         ovsdb_datum_destroy(&rm, &rm_type);
     }
     if (old.n < type->n_min) {
-        vsctl_fatal("\"remove\" operation would put %u %s in column %s of "
+        ctl_fatal("\"remove\" operation would put %u %s in column %s of "
                     "table %s but the minimum number is %u",
                     old.n,
                     type->value.type == OVSDB_TYPE_VOID ? "values" : "pairs",
@@ -3943,7 +3472,7 @@ cmd_clear(struct vsctl_context *ctx)
 
         type = &column->type;
         if (type->n_min > 0) {
-            vsctl_fatal("\"clear\" operation cannot be applied to column %s "
+            ctl_fatal("\"clear\" operation cannot be applied to column %s "
                         "of table %s, which is not allowed to be empty",
                         column->name, table->class->name);
         }
@@ -4091,11 +3620,11 @@ cmd_destroy(struct vsctl_context *ctx)
     table = get_table(table_name);
 
     if (delete_all && ctx->argc > 2) {
-        vsctl_fatal("--all and records argument should not be specified together");
+        ctl_fatal("--all and records argument should not be specified together");
     }
 
     if (delete_all && !must_exist) {
-        vsctl_fatal("--all and --if-exists should not be specified together");
+        ctl_fatal("--all and --if-exists should not be specified together");
     }
 
     if (delete_all) {
@@ -4207,7 +3736,7 @@ is_condition_satisfied(const struct vsctl_table_class *table,
                                    &value_string);
     die_if_error(error);
     if (!value_string) {
-        vsctl_fatal("%s: missing value", arg);
+        ctl_fatal("%s: missing value", arg);
     }
 
     type = column->type;
@@ -4220,7 +3749,7 @@ is_condition_satisfied(const struct vsctl_table_class *table,
         unsigned int idx;
 
         if (column->type.value.type == OVSDB_TYPE_VOID) {
-            vsctl_fatal("cannot specify key to check for non-map column %s",
+            ctl_fatal("cannot specify key to check for non-map column %s",
                         column->name);
         }
 
@@ -4369,10 +3898,10 @@ vsctl_context_done(struct vsctl_context *ctx, struct vsctl_command *command)
 }
 
 static void
-run_prerequisites(struct vsctl_command *commands, size_t n_commands,
+run_prerequisites(struct ctl_command *commands, size_t n_commands,
                   struct ovsdb_idl *idl)
 {
-    struct vsctl_command *c;
+    struct ctl_command *c;
 
     ovsdb_idl_add_table(idl, &ovsrec_table_open_vswitch);
     if (wait_for_reload) {
@@ -4451,7 +3980,7 @@ do_vsctl(const char *args, struct vsctl_command *commands, size_t n_commands,
     SHASH_FOR_EACH (node, &symtab->sh) {
         struct ovsdb_symbol *symbol = node->data;
         if (!symbol->created) {
-            vsctl_fatal("row id \"%s\" is referenced but never created (e.g. "
+            ctl_fatal("row id \"%s\" is referenced but never created (e.g. "
                         "with \"-- --id=%s create ...\")",
                         node->name, node->name);
         }
@@ -4492,7 +4021,7 @@ do_vsctl(const char *args, struct vsctl_command *commands, size_t n_commands,
 
     case TXN_ABORTED:
         /* Should not happen--we never call ovsdb_idl_txn_abort(). */
-        vsctl_fatal("transaction aborted");
+        ctl_fatal("transaction aborted");
 
     case TXN_UNCHANGED:
     case TXN_SUCCESS:
@@ -4502,11 +4031,11 @@ do_vsctl(const char *args, struct vsctl_command *commands, size_t n_commands,
         goto try_again;
 
     case TXN_ERROR:
-        vsctl_fatal("transaction error: %s", error);
+        ctl_fatal("transaction error: %s", error);
 
     case TXN_NOT_LOCKED:
         /* Should not happen--we never call ovsdb_idl_set_lock(). */
-        vsctl_fatal("database not locked");
+        ctl_fatal("database not locked");
 
     default:
         OVS_NOT_REACHED();
@@ -4593,7 +4122,7 @@ try_again:
 }
 
 /*
- * Developers who add new commands to the 'struct vsctl_command_syntax' must
+ * Developers who add new commands to the 'struct ctl_command_syntax' must
  * define the 'arguments' member of the struct.  The following keywords are
  * available for composing the argument format:
  *
@@ -4610,7 +4139,7 @@ try_again:
  * multiple times.
  *
  * */
-static const struct vsctl_command_syntax all_commands[] = {
+static const struct ctl_command_syntax vsctl_commands[] = {
     /* Open vSwitch commands. */
     {"init", 0, 0, "", NULL, cmd_init, NULL, "", RW},
     {"show", 0, 0, "", pre_cmd_show, cmd_show, NULL, "", RO},
@@ -4687,33 +4216,13 @@ static const struct vsctl_command_syntax all_commands[] = {
     /* Switch commands. */
     {"emer-reset", 0, 0, "", pre_cmd_emer_reset, cmd_emer_reset, NULL, "", RW},
 
-    /* Database commands. */
-    {"comment", 0, INT_MAX, "[ARG]...", NULL, NULL, NULL, "", RO},
-    {"get", 2, INT_MAX, "TABLE RECORD [COLUMN[:KEY]]...",pre_cmd_get, cmd_get,
-     NULL, "--if-exists,--id=", RO},
-    {"list", 1, INT_MAX, "TABLE [RECORD]...", pre_cmd_list, cmd_list, NULL,
-     "--if-exists,--columns=", RO},
-    {"find", 1, INT_MAX, "TABLE [COLUMN[:KEY]=VALUE]...", pre_cmd_find,
-     cmd_find, NULL, "--columns=", RO},
-    {"set", 3, INT_MAX, "TABLE RECORD COLUMN[:KEY]=VALUE...", pre_cmd_set,
-     cmd_set, NULL, "--if-exists", RW},
-    {"add", 4, INT_MAX, "TABLE RECORD COLUMN [KEY=]VALUE...", pre_cmd_add,
-     cmd_add, NULL, "--if-exists", RW},
-    {"remove", 4, INT_MAX, "TABLE RECORD COLUMN KEY|VALUE|KEY=VALUE...",
-     pre_cmd_remove, cmd_remove, NULL, "--if-exists", RW},
-    {"clear", 3, INT_MAX, "TABLE RECORD COLUMN...", pre_cmd_clear, cmd_clear,
-     NULL, "--if-exists", RW},
-    {"create", 2, INT_MAX, "TABLE COLUMN[:KEY]=VALUE...", pre_create,
-     cmd_create, post_create, "--id=", RW},
-    {"destroy", 1, INT_MAX, "TABLE [RECORD]...", pre_cmd_destroy, cmd_destroy,
-     NULL, "--if-exists,--all", RW},
-    {"wait-until", 2, INT_MAX, "TABLE RECORD [COLUMN[:KEY]=VALUE]...",
-     pre_cmd_wait_until, cmd_wait_until, NULL, "", RO},
-
     {NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, RO},
 };
 
-static const struct vsctl_command_syntax *get_all_commands(void)
+/* Registers vsctl and common db commands. */
+static void
+vsctl_cmd_init(void)
 {
-    return all_commands;
+    ctl_init();
+    ctl_register_commands(vsctl_commands);
 }
