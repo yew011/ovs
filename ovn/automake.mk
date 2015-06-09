@@ -83,6 +83,14 @@ bin_PROGRAMS += ovn/ovn-nbctl
 ovn_ovn_nbctl_SOURCES = ovn/ovn-nbctl.c
 ovn_ovn_nbctl_LDADD = ovn/lib/libovn.la ovsdb/libovsdb.la lib/libopenvswitch.la
 
+# ovn-sbctl
+bin_PROGRAMS += ovn/ovn-sbctl
+ovn_ovn_sbctl_SOURCES = ovn/ovn-sbctl.c
+ovn_ovn_sbctl_LDADD = ovn/lib/libovn.la ovsdb/libovsdb.la lib/libopenvswitch.la
+
+MAN_ROOTS += ovn/ovn-sbctl.8.in
+man_MANS += ovn/ovn-sbctl.8
+
 include ovn/controller/automake.mk
 include ovn/lib/automake.mk
 include ovn/northd/automake.mk

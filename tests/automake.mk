@@ -83,7 +83,8 @@ TESTSUITE_AT = \
 	tests/vlog.at \
 	tests/vtep-ctl.at \
 	tests/auto-attach.at \
-	tests/ovn.at
+	tests/ovn.at \
+	tests/ovn-sbctl.at
 
 KMOD_TESTSUITE_AT = \
 	tests/kmod-testsuite.at \
