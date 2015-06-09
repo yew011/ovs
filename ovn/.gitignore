@@ -7,3 +7,5 @@
 /ovn-sb.pic
 /ovn-nbctl
 /ovn-nbctl.8
+/ovn-sbctl
+/ovn-sbctl.8
