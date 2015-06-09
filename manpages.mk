@@ -1,5 +1,17 @@
 # Generated automatically -- do not modify!    -*- buffer-read-only: t -*-
 
+ovn/ovn-sbctl.8: \
+	ovn/ovn-sbctl.8.in \
+	lib/db-ctl-base.man \
+	lib/table.man \
+	ovsdb/remote-active.man \
+	ovsdb/remote-passive.man
+ovn/ovn-sbctl.8.in:
+lib/db-ctl-base.man:
+lib/table.man:
+ovsdb/remote-active.man:
+ovsdb/remote-passive.man:
+
 ovsdb/ovsdb-client.1: \
 	ovsdb/ovsdb-client.1.in \
 	lib/common-syn.man \
