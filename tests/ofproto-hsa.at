@@ -1,122 +1,5 @@
 AT_BANNER([ofproto-hsa])
 
-m4_define([CHECK_OFPROTO_TRACE], [
-AT_CHECK([ovs-appctl ofproto/trace br0 "$1" | tail -n2],[0],
-[dnl
-Megaflow: recirc_id=0,$2
-Datapath actions: $3
-])
-])
-
-# simple flow table, just output.
-AT_SETUP([ofproto-hsa - leak detect 1])
-OVS_VSWITCHD_START(
-  [add-port br0 p1 -- set int p1 type=dummy ofport_request=1 -- \
-   add-port br0 p2 -- set int p2 type=dummy ofport_request=2 -- \
-   add-port br0 p3 -- set int p3 type=dummy ofport_request=3])
-
-# should have only two lines of output, one for each output action.
-AT_DATA([flows.txt], [dnl
-priority=3,in_port=1,ip,nw_src=10.1.0.0/255.255.0.0,actions=2
-priority=2,in_port=1,ip,nw_src=20.2.0.0/255.255.0.0,actions=drop
-priority=1,in_port=1,tun_id=0xffffffffffffffff,tcp,nw_src=30.1.0.0/255.255.0.0,tp_src=10,actions=2
-])
-
-AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
-
-AT_CHECK([ovs-appctl hsa/detect-leak br0 1 | sed -n '/OUTPUT/,$p'], [0], [dnl
-OUTPUT
-======
-Output Port No      Input Header Space
-==============      ==================
-2                  ip,in_port=1,nw_src=10.1.0.0/16
-
-Output Port No      Input Header Space
-==============      ==================
-2                  tcp,tun_id=0xffffffffffffffff,in_port=1,nw_src=30.1.0.0/16,tp_src=10
-
-])
-
-# confirm the analysis with ofproto/trace.
-CHECK_OFPROTO_TRACE([tcp,tun_id=0xffffffffffffffff,in_port=1,nw_src=30.1.123.123,tp_src=10],
-        [tcp,tun_id=0xffffffffffffffff,in_port=1,nw_src=30.1.0.0/16,nw_frag=no,tp_src=10], [2])
-
-OVS_VSWITCHD_STOP
-AT_CLEANUP
-
-# test with cascaded resubmit, load action.
-AT_SETUP([ofproto-hsa - leak detect 2])
-OVS_VSWITCHD_START(
-  [add-port br0 p1 -- set int p1 type=dummy ofport_request=1 -- \
-   add-port br0 p2 -- set int p2 type=dummy ofport_request=2 -- \
-   add-port br0 p3 -- set int p3 type=dummy ofport_request=3 -- \
-   add-port br0 p4 -- set int p4 type=dummy ofport_request=4])
-
-# much more complicated pipeline.
-AT_DATA([flows.txt], [dnl
-priority=20,in_port=1,reg2=0,ip,nw_src=10.1.0.0/255.255.0.0,actions=2
-priority=10,reg2=0xffff,ip,actions=3
-priority=2,in_port=1,tun_id=0xffffffffffffffff,ip,actions=resubmit(,1),mod_vlan_vid:10,resubmit(,2)
-table=1,tun_id=0xffffffffffffffff,actions=load:0xffff->NXM_NX_REG2[[0..15]],resubmit(,0)
-table=2,reg2=0xffff,dl_vlan=10,actions=output:4
-])
-
-AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
-
-AT_CHECK([ovs-appctl hsa/detect-leak br0 1 | sed -n '/OUTPUT/,$p'], [0], [dnl
-OUTPUT
-======
-Output Port No      Input Header Space
-==============      ==================
-2                  ip,in_port=1,nw_src=10.1.0.0/16
-
-Output Port No      Input Header Space
-==============      ==================
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=1.0.0.0/1.0.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.0.0.0/2.0.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=4.0.0.0/4.0.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.0.0.0/8.0.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=16.0.0.0/16.0.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=32.0.0.0/32.0.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=64.0.0.0/64.0.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=128.0.0.0/1
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.0.0.0/0.1.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.2.0.0/0.2.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.4.0.0/0.4.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.8.0.0/0.8.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.16.0.0/0.16.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.32.0.0/0.32.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.64.0.0/0.64.0.0
-3                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.128.0.0/0.128.0.0
-
-Output Port No      Input Header Space
-==============      ==================
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=1.0.0.0/1.0.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.0.0.0/2.0.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=4.0.0.0/4.0.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.0.0.0/8.0.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=16.0.0.0/16.0.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=32.0.0.0/32.0.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=64.0.0.0/64.0.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=128.0.0.0/1
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.0.0.0/0.1.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.2.0.0/0.2.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.4.0.0/0.4.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.8.0.0/0.8.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.16.0.0/0.16.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.32.0.0/0.32.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.64.0.0/0.64.0.0
-4                  ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=0.128.0.0/0.128.0.0
-
-])
-
-# confirm the analysis with ofproto/trace.
-CHECK_OFPROTO_TRACE([ip,tun_id=0xffffffffffffffff,in_port=1,nw_src=10.4.123.123],
-        [ip,reg2=0,tun_id=0xffffffffffffffff,in_port=1,vlan_tci=0x0000,nw_src=0.0.0.0/0.1.0.0,nw_frag=no], [3,push_vlan(vid=10,pcp=0),4])
-
-OVS_VSWITCHD_STOP
-AT_CLEANUP
-
 # simple infinit loop.
 AT_SETUP([ofproto-hsa - loop detect 1])
 OVS_VSWITCHD_START(
@@ -130,13 +13,9 @@ table=1,in_port=1,ip,nw_dst=20.2.0.0/255.255.0.0,actions=resubmit(,0)
 
 AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
 
-AT_CHECK([ovs-appctl hsa/detect-loop br0 1 | sed -n '/OUTPUT/,$p'], [0], [dnl
+AT_CHECK([ovs-appctl hsa/detect-loop br0 | sed -n '/OUTPUT/,$p'], [0], [dnl
 OUTPUT
 ======
-Input Header Space
-==================
-ip,in_port=1,nw_src=10.1.0.0/16,nw_dst=20.2.0.0/16
-=========
 Loop Path (Infinite Loop)
 =========
 table_id=0, priority=3,ip,in_port=1,nw_src=10.1.0.0/16,actions=resubmit(,1)
@@ -192,13 +71,9 @@ table=3,in_port=1,actions=output:3
 
 AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
 
-AT_CHECK([ovs-appctl hsa/detect-loop br0 1 | sed -n '/OUTPUT/,$p'], [0], [dnl
+AT_CHECK([ovs-appctl hsa/detect-loop br0 | sed -n '/OUTPUT/,$p'], [0], [dnl
 OUTPUT
 ======
-Input Header Space
-==================
-ip,in_port=1,nw_src=10.1.0.0/16,nw_dst=20.2.0.0/16
-=========
 Loop Path (Finite Loop)
 =========
 table_id=0, priority=3,ip,in_port=1,nw_src=10.1.0.0/16,actions=output:2,resubmit(,1)
@@ -206,6 +81,35 @@ table_id=1, priority=1,ip,in_port=1,nw_dst=20.2.0.0/16,actions=load:0xffff->NXM_
 table_id=2, reg2=0xffff,in_port=1,actions=load:0xffff->NXM_NX_REG3[[0..15]],resubmit(,0)
 table_id=0, priority=3,ip,in_port=1,nw_src=10.1.0.0/16,actions=output:2,resubmit(,1)
 table_id=1, priority=2,reg3=0xffff,in_port=1,actions=resubmit(,3)
+
+])
+
+OVS_VSWITCHD_STOP
+AT_CLEANUP
+
+# finite loop.
+AT_SETUP([ofproto-hsa - unused detect 1])
+OVS_VSWITCHD_START(
+  [add-port br0 p1 -- set int p1 type=dummy ofport_request=1])
+
+# should have only two lines of output, one for each output action.
+AT_DATA([flows.txt], [dnl
+table=0,priority=3,in_port=1,ip,nw_src=10.1.0.0/255.255.0.0,actions=2,resubmit(,1)
+table=0,priority=1,in_port=1,reg5=0x1234,tcp,nw_src=10.1.0.0/255.255.0.0,tp_src=10,actions=2,resubmit(,1)
+table=1,priority=2,in_port=1,reg3=0xffff,actions=resubmit(,3)
+table=1,priority=1,in_port=1,ip,nw_dst=20.2.0.0/255.255.0.0,actions=load:0xffff->NXM_NX_REG2[[0..15]],resubmit(,2)
+table=2,in_port=1,reg2=0xffff,actions=load:0xffff->NXM_NX_REG3[[0..15]],resubmit(,0)
+table=3,in_port=1,actions=output:3
+])
+
+AT_CHECK([ovs-ofctl add-flows br0 flows.txt])
+
+AT_CHECK([ovs-appctl hsa/detect-unused br0 | sed -n '/OUTPUT/,$p'], [0], [dnl
+OUTPUT
+======
+UNUSED FLOWS
+============
+table_id=0, priority=1,tcp,reg5=0x1234,in_port=1,nw_src=10.1.0.0/16,tp_src=10,actions=output:2,resubmit(,1)
 
 ])
 
