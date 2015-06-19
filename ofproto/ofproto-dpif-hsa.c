@@ -49,6 +49,15 @@ enum operation_types {
 #define TABLE_DEFAULT 0
 /* Default indent level for output. */
 #define INDENT_DEFAULT 0
+/* Indicates no in_port given from cmdline. */
+#define OFP_PORT_NULL 0
+
+/* A stack entry for the HSA analysis. */
+struct hsa_stack_entry {
+    struct ovs_list list_node;      /* In owning header_space's 'stack'. */
+    union mf_subvalue value;
+    union mf_subvalue mask;
+};
 
 /* Rule used for head space analysis. */
 struct hsa_rule {
@@ -77,6 +86,8 @@ struct header_space {
      * matched rules and rule actions.
      */
     struct match match_hs;          /* Current header space. */
+
+    struct ovs_list stack;          /* Contains 'hsa_stack_entry's. */
 
     /* For HSA_LOOP_DETECT operation, indexed using previously matched
      * 'struct hsa_rule' pointers.  If a particular rule is matched more
@@ -131,7 +142,7 @@ static void hsa_log_invalid_rule(struct hsa_rule *);
 
 static void hsa_rule_apply_match(struct header_space *, struct hsa_rule *);
 
-static void hsa_init(struct ofproto *, struct ds *);
+static void hsa_init(struct ofproto *, struct ds *, ofp_port_t in_port);
 static void hsa_finish(void);
 static void hsa_debug_dump_flows(struct ds *, const char *);
 static struct hs_list *hsa_rule_apply_actions(struct header_space *,
@@ -159,6 +170,7 @@ hs_create(void)
 {
     struct header_space *hs = xzalloc(sizeof *hs);
 
+    list_init(&hs->stack);
     hmap_init(&hs->matched_map);
 
     return hs;
@@ -171,6 +183,20 @@ hs_clone(const struct header_space *hs)
     struct header_space *clone = xmalloc(sizeof *hs);
 
     clone->match_hs = hs->match_hs;
+
+    /* Copies the stack. */
+    list_init(&clone->stack);
+    if (!list_is_empty(&hs->stack)) {
+        struct hsa_stack_entry *iter;
+
+        LIST_FOR_EACH (iter, list_node, &hs->stack) {
+            struct hsa_stack_entry *copy = xmalloc(sizeof *copy);
+
+            copy->value = iter->value;
+            copy->mask = iter->mask;
+            list_push_back(&clone->stack, &copy->list_node);
+        }
+    }
 
     hmap_init(&clone->matched_map);
     /* Copies the previous matched rules. */
@@ -205,6 +231,13 @@ static void
 hs_destroy(struct header_space *hs)
 {
     struct matched_entry *m_iter, *m_next;
+    struct hsa_stack_entry *s_iter, *s_next;
+
+    /* Destorys the stack. */
+    LIST_FOR_EACH_SAFE (s_iter, s_next, list_node, &hs->stack) {
+        list_remove(&s_iter->list_node);
+        free(s_iter);
+    }
 
     /* Destroys the matched_map. */
     HMAP_FOR_EACH_SAFE (m_iter, m_next, hmap_node, &hs->matched_map) {
@@ -396,8 +429,12 @@ hsa_rule_apply_match(struct header_space *hs, struct hsa_rule *rule)
 
 /* Masks metadata, regs and ipv6. */
 static void
-hs_init__(struct header_space *hs)
+hs_init__(struct header_space *hs, ofp_port_t in_port)
 {
+    if (in_port != OFP_PORT_NULL) {
+        hs->match_hs.flow.in_port.ofp_port = in_port;
+        WC_MASK_FIELD(&hs->match_hs.wc, in_port);
+    }
     WC_MASK_FIELD(&hs->match_hs.wc, regs);
     WC_MASK_FIELD(&hs->match_hs.wc, metadata);
     WC_MASK_FIELD(&hs->match_hs.wc, ipv6_src);
@@ -407,7 +444,7 @@ hs_init__(struct header_space *hs)
 /* Given the 'ofproto' of a bridge, copies all rules from each oftable
  * into a sorted list with descending priority.  Also, initilizes 'hs'. */
 static void
-hsa_init(struct ofproto *ofproto, struct ds *out)
+hsa_init(struct ofproto *ofproto, struct ds *out, ofp_port_t in_port)
 {
     struct oftable *oftable;
     uint8_t table_id = 0;
@@ -444,7 +481,7 @@ hsa_init(struct ofproto *ofproto, struct ds *out)
 
     /* Initializes the 'hs_start', sets and masks the 'metadata' and 'regs'. */
     hs_start = hs_create();
-    hs_init__(hs_start);
+    hs_init__(hs_start, in_port);
 
     if (debug_enabled) {
         ds_put_char_multiple(out, '\t', INDENT_DEFAULT);
@@ -678,17 +715,47 @@ hsa_rule_apply_actions(struct header_space *input_hs, struct hsa_rule *rule,
                 memcpy(&hs_flow->dl_src, ofpact_get_SET_ETH_SRC(a)->mac,
                        ETH_ADDR_LEN);
                 break;
+
             case OFPACT_SET_ETH_DST:
                 memset(&hs_wc->masks.dl_dst, 0xff, sizeof hs_wc->masks.dl_dst);
                 memcpy(&hs_flow->dl_dst, ofpact_get_SET_ETH_DST(a)->mac,
                        ETH_ADDR_LEN);
                 break;
+
             case OFPACT_DEC_TTL:
                 /* Decrements only when TTL is exact-matched. */
                 if (hs_wc->masks.nw_ttl == 0xff && hs_flow->nw_ttl) {
                     hs_flow->nw_ttl--;
                 }
                 break;
+
+            case OFPACT_STACK_PUSH: {
+                struct hsa_stack_entry *entry = xmalloc(sizeof *entry);
+
+                mf_read_subfield(&ofpact_get_STACK_PUSH(a)->subfield,
+                                 hs_flow, &entry->value);
+                mf_read_subfield(&ofpact_get_STACK_PUSH(a)->subfield,
+                                 &hs_wc->masks, &entry->mask);
+                list_push_back(&hs->stack, &entry->list_node);
+                break;
+            }
+
+            case OFPACT_STACK_POP:
+                if (!list_is_empty(&hs->stack)) {
+                    struct hsa_stack_entry *entry;
+
+                    entry = CONTAINER_OF(list_pop_front(&hs->stack),
+                                         struct hsa_stack_entry, list_node);
+                    mf_write_subfield_flow(&ofpact_get_STACK_POP(a)->subfield,
+                                           &entry->value, hs_flow);
+                    mf_write_subfield_flow(&ofpact_get_STACK_POP(a)->subfield,
+                                           &entry->mask, &hs_wc->masks);
+                    free(entry);
+                } else {
+                    VLOG_WARN("Failed to pop from an empty stack");
+                }
+                break;
+
             case OFPACT_NOTE:
             case OFPACT_CONTROLLER:
                 /* noop. */
@@ -730,12 +797,6 @@ hsa_rule_apply_actions(struct header_space *input_hs, struct hsa_rule *rule,
                 break;
             case OFPACT_GROUP:
                 VLOG_INFO("OFPACT_GROUP not supported");
-                break;
-            case OFPACT_STACK_PUSH:
-                VLOG_INFO("OFPACT_STACK_PUSH not supported");
-                break;
-            case OFPACT_STACK_POP:
-                VLOG_INFO("OFPACT_STACK_POP not supported");
                 break;
             case OFPACT_PUSH_MPLS:
                 VLOG_INFO("OFPACT_PUSH_MPLS not supported");
@@ -914,6 +975,16 @@ hsa_calculate(struct header_space *hs, uint8_t table_id, ofp_port_t in_port,
     hsbm_init(hsbm, &hs->match_hs);
     list_insert(&hsbm_list->list, &hsbm->list_node);
 
+    if (debug_enabled || true) {
+        struct ds tmp = DS_EMPTY_INITIALIZER;
+
+        ds_put_format(&tmp, "Lookup from table %"PRIu8", for header space: ",
+                      table_id);
+        hsa_match_print(&tmp, &hs->match_hs);
+        VLOG_INFO("%s", ds_cstr(&tmp));
+        ds_destroy(&tmp);
+    }
+
     if (debug_enabled) {
         ds_put_char_multiple(out, '\t', indent);
         ds_put_format(out, "Lookup from table %"PRIu8", for header space:\n",
@@ -954,6 +1025,15 @@ hsa_calculate(struct header_space *hs, uint8_t table_id, ofp_port_t in_port,
                 ds_put_cstr(out, "Header-Space changed to (before apply "
                             "actions):");
                 hsa_match_print(out, &clone->match_hs);
+            }
+
+            if (debug_enabled || true) {
+                struct ds tmp = DS_EMPTY_INITIALIZER;
+
+                ds_put_format(&tmp, "Found match rule: ");
+                hsa_rule_print(&tmp, rule, false);
+                VLOG_INFO("%s", ds_cstr(&tmp));
+                ds_destroy(&tmp);
             }
 
             /* Applies the actions. */
@@ -1052,17 +1132,21 @@ hsa_print_result(struct ds *out, struct hs_list *result)
 
 
 static void
-hsa_do_analysis(struct ds *out, const char *ofproto_name)
+hsa_do_analysis(struct ds *out, int argc, const char **argv)
 {
     struct hs_list *result = hs_list_create();
     struct ofproto *ofproto;
+    const char *ofproto_name = argv[1];
+    ofp_port_t in_port;
 
     ofproto = ofproto_lookup(ofproto_name);
     if (!ofproto) {
         ds_put_cstr(out, "no such bridge");
         return;
     }
-    hsa_init(ofproto, out);
+    in_port = argc == 3 ?
+        OFP_PORT_C(atoi(CONST_CAST(char *, argv[2]))) : OFP_PORT_NULL;
+    hsa_init(ofproto, out, in_port);
     hsa_debug_dump_flows(out, ofproto_name);
     /* Starts the HSA with global header space and table 0. */
     hsa_calculate(hs_start, TABLE_DEFAULT, OFPP_IN_PORT, false, result,
@@ -1075,25 +1159,25 @@ hsa_do_analysis(struct ds *out, const char *ofproto_name)
 }
 
 static void
-hsa_unixctl_loop_detect(struct unixctl_conn *conn, int argc OVS_UNUSED,
+hsa_unixctl_loop_detect(struct unixctl_conn *conn, int argc,
                         const char *argv[], void *aux OVS_UNUSED)
 {
     struct ds out = DS_EMPTY_INITIALIZER;
 
     op_type = HSA_LOOP_DETECT;
-    hsa_do_analysis(&out, argv[1]);
+    hsa_do_analysis(&out, argc, argv);
     unixctl_command_reply(conn, ds_cstr(&out));
     ds_destroy(&out);
 }
 
 static void
-hsa_unixctl_unused_detect(struct unixctl_conn *conn, int argc OVS_UNUSED,
+hsa_unixctl_unused_detect(struct unixctl_conn *conn, int argc,
                         const char *argv[], void *aux OVS_UNUSED)
 {
     struct ds out = DS_EMPTY_INITIALIZER;
 
     op_type = HSA_UNUSED_DETECT;
-    hsa_do_analysis(&out, argv[1]);
+    hsa_do_analysis(&out, argc, argv);
     unixctl_command_reply(conn, ds_cstr(&out));
     ds_destroy(&out);
 }
@@ -1101,9 +1185,9 @@ hsa_unixctl_unused_detect(struct unixctl_conn *conn, int argc OVS_UNUSED,
 static void
 hsa_unixctl_init(void)
 {
-    unixctl_command_register("hsa/detect-loop", "bridge", 1, 1,
+    unixctl_command_register("hsa/detect-loop", "bridge [in_port]", 1, 2,
                              hsa_unixctl_loop_detect, NULL);
-    unixctl_command_register("hsa/detect-unused", "bridge", 1, 1,
+    unixctl_command_register("hsa/detect-unused", "bridge [in_port]", 1, 2,
                              hsa_unixctl_unused_detect, NULL);
 }
 
