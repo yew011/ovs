@@ -113,14 +113,13 @@ struct hs_list {
     struct ovs_list list;
 };
 
+/* Global control of debugging and the hsa thread id. */
+static bool debug_enabled;
+
 /* Global 'struct hsa_table's, one for each OpenFlow table. */
 static struct hsa_table *hsa_tables;
-/* Number of tables in 'hsa_tables'. */
 static int n_hsa_tables;
-/* Initial 'struct header_space' for conducting analysis. */
-static struct header_space *hs_start;
-/* Global control of debugging mode. */
-static bool debug_enabled = true;
+
 /* Operation type. */
 static int op_type;
 /* Execution error? */
@@ -136,13 +135,14 @@ static void hsa_rule_swap(size_t a, size_t b, void *aux);
 static int  hsa_rule_compare(size_t a, size_t b, void *aux);
 static bool hsa_rule_check_match(struct header_space *, struct hsa_rule *,
                                  ofp_port_t in_port);
-static void hsa_match_print(struct ds *, struct match *);
+static void hsa_match_print(struct ds *, struct match *, bool new_line);
 static void hsa_rule_print(struct ds *, struct hsa_rule *, bool new_line);
 static void hsa_log_invalid_rule(struct hsa_rule *);
 
 static void hsa_rule_apply_match(struct header_space *, struct hsa_rule *);
 
-static void hsa_init(struct ofproto *, struct ds *, ofp_port_t in_port);
+static void hsa_init(struct ofproto *, struct ds *, ofp_port_t in_port,
+                     struct header_space *);
 static void hsa_finish(void);
 static void hsa_debug_dump_flows(struct ds *, const char *);
 static struct hs_list *hsa_rule_apply_actions(struct header_space *,
@@ -320,10 +320,12 @@ hsa_rule_check_match(struct header_space *hs, struct hsa_rule *rule,
 
 /* Prints the match in 'out'. */
 static void
-hsa_match_print(struct ds *out, struct match *match)
+hsa_match_print(struct ds *out, struct match *match, bool new_line)
 {
     match_format(match, out, OFP_DEFAULT_PRIORITY);
-    ds_put_cstr(out, "\n");
+    if (new_line) {
+        ds_put_cstr(out, "\n");
+    }
 }
 
 /* Prints the OpenFlow rule in 'out'. */
@@ -442,9 +444,10 @@ hs_init__(struct header_space *hs, ofp_port_t in_port)
 }
 
 /* Given the 'ofproto' of a bridge, copies all rules from each oftable
- * into a sorted list with descending priority.  Also, initilizes 'hs'. */
+ * into a sorted list with descending priority.  Also, initilizes 'hs_start'. */
 static void
-hsa_init(struct ofproto *ofproto, struct ds *out, ofp_port_t in_port)
+hsa_init(struct ofproto *ofproto, struct ds *out, ofp_port_t in_port,
+         struct header_space *hs_start)
 {
     struct oftable *oftable;
     uint8_t table_id = 0;
@@ -469,8 +472,8 @@ hsa_init(struct ofproto *ofproto, struct ds *out, ofp_port_t in_port)
             hsa_rule->table_id = table_id;
             hsa_rule->prio = rule->cr.priority;
             minimatch_expand(&rule->cr.match, &hsa_rule->match);
-            /* TODO: When hsa is moved into a dedicated thread, use ref_count
-             * to avoid actions being deleted by other threads. */
+            /* Since actions are rcu-protected, do not need to worry
+             * about race. */
             hsa_rule->actions = rule_get_actions(rule);
             hsbm_init(&hsa_rule->hsbm, &hsa_rule->match);
             list_insert(rules, &hsa_rule->node);
@@ -480,13 +483,12 @@ hsa_init(struct ofproto *ofproto, struct ds *out, ofp_port_t in_port)
     }
 
     /* Initializes the 'hs_start', sets and masks the 'metadata' and 'regs'. */
-    hs_start = hs_create();
     hs_init__(hs_start, in_port);
 
     if (debug_enabled) {
         ds_put_char_multiple(out, '\t', INDENT_DEFAULT);
         ds_put_cstr(out, "Header-Space init done:\n");
-        hsa_match_print(out, &hs_start->match_hs);
+        hsa_match_print(out, &hs_start->match_hs, true);
         ds_put_cstr(out, "\n");
     }
 }
@@ -511,7 +513,6 @@ hsa_finish(void)
         }
     }
     free(hsa_tables);
-    hs_destroy(hs_start);
 }
 
 static void
@@ -975,22 +976,12 @@ hsa_calculate(struct header_space *hs, uint8_t table_id, ofp_port_t in_port,
     hsbm_init(hsbm, &hs->match_hs);
     list_insert(&hsbm_list->list, &hsbm->list_node);
 
-    if (debug_enabled || true) {
-        struct ds tmp = DS_EMPTY_INITIALIZER;
-
-        ds_put_format(&tmp, "Lookup from table %"PRIu8", for header space: ",
-                      table_id);
-        hsa_match_print(&tmp, &hs->match_hs);
-        VLOG_INFO("%s", ds_cstr(&tmp));
-        ds_destroy(&tmp);
-    }
-
     if (debug_enabled) {
         ds_put_char_multiple(out, '\t', indent);
         ds_put_format(out, "Lookup from table %"PRIu8", for header space:\n",
                       table_id);
         ds_put_char_multiple(out, '\t', indent);
-        hsa_match_print(out, &hs->match_hs);
+        hsa_match_print(out, &hs->match_hs, true);
     }
 
     LIST_FOR_EACH(rule, node, &hsa_tbl->rules) {
@@ -1024,7 +1015,7 @@ hsa_calculate(struct header_space *hs, uint8_t table_id, ofp_port_t in_port,
                 ds_put_char_multiple(out, '\t', indent);
                 ds_put_cstr(out, "Header-Space changed to (before apply "
                             "actions):");
-                hsa_match_print(out, &clone->match_hs);
+                hsa_match_print(out, &clone->match_hs, true);
             }
 
             if (debug_enabled || true) {
@@ -1101,6 +1092,8 @@ hsa_print_result(struct ds *out, struct hs_list *result)
         LIST_FOR_EACH (hs, list_node, &result->list) {
             size_t i;
 
+            ds_put_format(out, "Final Flow: ");
+            hsa_match_print(out, &hs->match_hs, true);
             ds_put_format(out, "Loop Path (%s Loop)\n",
                           hs->in_loop ? "Infinite" : "Finite");
             ds_put_cstr(out, "=========\n");
@@ -1135,27 +1128,37 @@ static void
 hsa_do_analysis(struct ds *out, int argc, const char **argv)
 {
     struct hs_list *result = hs_list_create();
-    struct ofproto *ofproto;
     const char *ofproto_name = argv[1];
-    ofp_port_t in_port;
+    struct ofproto *ofproto = ofproto_lookup(ofproto_name);
+    ofp_port_t in_port = OFP_PORT_NULL;
+    struct header_space *hs_start;
 
-    ofproto = ofproto_lookup(ofproto_name);
     if (!ofproto) {
         ds_put_cstr(out, "no such bridge");
         return;
     }
-    in_port = argc == 3 ?
-        OFP_PORT_C(atoi(CONST_CAST(char *, argv[2]))) : OFP_PORT_NULL;
-    hsa_init(ofproto, out, in_port);
+    /* Parses the in_port and --debug. */
+    if (argc > 2) {
+        if (!strcmp(argv[2], "--verbose")) {
+            debug_enabled = true;
+        } else {
+            in_port = OFP_PORT_C(atoi(CONST_CAST(char *, argv[2])));
+            if (argc == 4 && !strcmp(argv[3], "--verbose")) {
+                debug_enabled = true;
+            }
+        }
+    }
+
+    hs_start = hs_create();
+    hsa_init(ofproto, out, in_port, hs_start);
     hsa_debug_dump_flows(out, ofproto_name);
-    /* Starts the HSA with global header space and table 0. */
     hsa_calculate(hs_start, TABLE_DEFAULT, OFPP_IN_PORT, false, result,
                   INDENT_DEFAULT, out);
-    /* Prints output. */
     hsa_print_result(out, result);
     hs_list_destroy(result);
-    /* Finishes up. */
+    hs_destroy(hs_start);
     hsa_finish();
+    debug_enabled = false;
 }
 
 static void
@@ -1185,10 +1188,10 @@ hsa_unixctl_unused_detect(struct unixctl_conn *conn, int argc,
 static void
 hsa_unixctl_init(void)
 {
-    unixctl_command_register("hsa/detect-loop", "bridge [in_port]", 1, 2,
-                             hsa_unixctl_loop_detect, NULL);
-    unixctl_command_register("hsa/detect-unused", "bridge [in_port]", 1, 2,
-                             hsa_unixctl_unused_detect, NULL);
+    unixctl_command_register("hsa/detect-loop", "bridge [in_port] [--verbose]",
+                             1, 3, hsa_unixctl_loop_detect, NULL);
+    unixctl_command_register("hsa/detect-unused", "bridge [in_port] [--verbose]",
+                             1, 3, hsa_unixctl_unused_detect, NULL);
 }
 
 /* Public functions. */
