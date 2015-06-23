@@ -115,6 +115,7 @@ struct hs_list {
 
 /* Global control of debugging and the hsa thread id. */
 static bool debug_enabled;
+static pthread_t hsa_tid;
 
 /* Global 'struct hsa_table's, one for each OpenFlow table. */
 static struct hsa_table *hsa_tables;
@@ -1124,74 +1125,91 @@ hsa_print_result(struct ds *out, struct hs_list *result)
 }
 
 
-static void
-hsa_do_analysis(struct ds *out, int argc, const char **argv)
+/* Context for conducting hsa.
+ * 'argv' is dynamically allocated, user must free it. */
+struct hsa_context {
+    struct unixctl_conn *conn;
+    int argc;
+    const char **argv;
+};
+
+static void *
+hsa_do_analysis(void *ctx_)
 {
+    struct hsa_context *ctx = ctx_;
+    struct ds out = DS_EMPTY_INITIALIZER;
     struct hs_list *result = hs_list_create();
-    const char *ofproto_name = argv[1];
-    struct ofproto *ofproto = ofproto_lookup(ofproto_name);
+    struct ofproto *ofproto = ofproto_lookup(ctx->argv[1]);
     ofp_port_t in_port = OFP_PORT_NULL;
     struct header_space *hs_start;
 
     if (!ofproto) {
-        ds_put_cstr(out, "no such bridge");
-        return;
+        ds_put_cstr(&out, "no such bridge");
+        goto finish;
     }
     /* Parses the in_port and --debug. */
-    if (argc > 2) {
-        if (!strcmp(argv[2], "--verbose")) {
+    if (ctx->argc > 2) {
+        if (!strcmp(ctx->argv[2], "--verbose")) {
             debug_enabled = true;
         } else {
-            in_port = OFP_PORT_C(atoi(CONST_CAST(char *, argv[2])));
-            if (argc == 4 && !strcmp(argv[3], "--verbose")) {
+            in_port = OFP_PORT_C(atoi(CONST_CAST(char *, ctx->argv[2])));
+            if (ctx->argc == 4 && !strcmp(ctx->argv[3], "--verbose")) {
                 debug_enabled = true;
             }
         }
     }
 
     hs_start = hs_create();
-    hsa_init(ofproto, out, in_port, hs_start);
-    hsa_debug_dump_flows(out, ofproto_name);
+    hsa_init(ofproto, &out, in_port, hs_start);
+    hsa_debug_dump_flows(&out, ctx->argv[1]);
     hsa_calculate(hs_start, TABLE_DEFAULT, OFPP_IN_PORT, false, result,
-                  INDENT_DEFAULT, out);
-    hsa_print_result(out, result);
+                  INDENT_DEFAULT, &out);
+    hsa_print_result(&out, result);
     hs_list_destroy(result);
     hs_destroy(hs_start);
     hsa_finish();
     debug_enabled = false;
+
+finish:
+    unixctl_command_reply(ctx->conn, ds_cstr(&out));
+    ds_destroy(&out);
+    hsa_tid = 0;
+
+    return NULL;
 }
 
 static void
-hsa_unixctl_loop_detect(struct unixctl_conn *conn, int argc,
-                        const char *argv[], void *aux OVS_UNUSED)
+hsa_unixctl_start(struct unixctl_conn *conn, int argc,
+                  const char *argv[], void *aux)
 {
-    struct ds out = DS_EMPTY_INITIALIZER;
+    struct hsa_context *ctx;
+    size_t i;
 
-    op_type = HSA_LOOP_DETECT;
-    hsa_do_analysis(&out, argc, argv);
-    unixctl_command_reply(conn, ds_cstr(&out));
-    ds_destroy(&out);
-}
-
-static void
-hsa_unixctl_unused_detect(struct unixctl_conn *conn, int argc,
-                        const char *argv[], void *aux OVS_UNUSED)
-{
-    struct ds out = DS_EMPTY_INITIALIZER;
-
-    op_type = HSA_UNUSED_DETECT;
-    hsa_do_analysis(&out, argc, argv);
-    unixctl_command_reply(conn, ds_cstr(&out));
-    ds_destroy(&out);
+    if (hsa_tid) {
+        unixctl_command_reply_error(conn, "Already running HSA please wait");
+        return;
+    }
+    op_type = *(int *)aux;
+    ctx = xmalloc(sizeof *ctx);
+    ctx->conn = conn;
+    ctx->argc = argc;
+    ctx->argv = xmalloc(argc * sizeof *ctx->argv);
+    for (i = 0; i < argc; i++) {
+        ctx->argv[i] = xstrdup(argv[i]);
+    }
+    hsa_tid = ovs_thread_create("hsa", hsa_do_analysis, ctx);
 }
 
 static void
 hsa_unixctl_init(void)
 {
+    static int loop_detect = HSA_LOOP_DETECT;
+    static int unused_detect = HSA_UNUSED_DETECT;
+
     unixctl_command_register("hsa/detect-loop", "bridge [in_port] [--verbose]",
-                             1, 3, hsa_unixctl_loop_detect, NULL);
-    unixctl_command_register("hsa/detect-unused", "bridge [in_port] [--verbose]",
-                             1, 3, hsa_unixctl_unused_detect, NULL);
+                             1, 3, hsa_unixctl_start, &loop_detect);
+    unixctl_command_register("hsa/detect-unused", "bridge [--verbose]",
+                             1, 2, hsa_unixctl_start, &unused_detect);
 }
 
 /* Public functions. */
