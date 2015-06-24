@@ -115,9 +115,12 @@ m4_define([OVS_VSWITCHD_START],
    AT_CHECK([ovs-vsctl -- add-br br0 -- set bridge br0 datapath-type=dummy other-config:datapath-id=fedcba9876543210 other-config:hwaddr=aa:55:aa:55:00:00 protocols=[[OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13,OpenFlow14,OpenFlow15]] fail-mode=secure -- $1 m4_if([$2], [], [], [| ${PERL} $srcdir/uuidfilt.pl])], [0], [$2])
 ])
 
+# check_logs scans through the specified files and report all WARN, ERR, EMER
+# log entries.  User must provide the files to scan as $1.  User can also
+# add custom sed filters in $2.
 m4_divert_push([PREPARE_TESTS])
 check_logs () {
-    sed -n "$1
+    sed -n "$2
 /timeval.*Unreasonably long [[0-9]]*ms poll interval/d
 /timeval.*faults: [[0-9]]* minor, [[0-9]]* major/d
 /timeval.*disk: [[0-9]]* reads, [[0-9]]* writes/d
@@ -125,7 +128,7 @@ check_logs () {
 /ovs_rcu.*blocked [[0-9]]* ms waiting for .* to quiesce/d
 /|WARN|/p
 /|ERR|/p
-/|EMER|/p" ovs-vswitchd.log ovsdb-server.log
+/|EMER|/p" $1
 }
 m4_divert_pop([PREPARE_TESTS])
 
@@ -138,7 +141,7 @@ m4_divert_pop([PREPARE_TESTS])
 #
 #   OVS_VSWITCHD_STOP(["/expected error/d"])
 m4_define([OVS_VSWITCHD_STOP],
-  [AT_CHECK([check_logs $1])
+  [AT_CHECK([check_logs "ovsdb-server.log ovs-vswitchd.log" $1])
    AT_CHECK([ovs-appctl -t ovs-vswitchd exit])
    AT_CHECK([ovs-appctl -t ovsdb-server exit])])
 
