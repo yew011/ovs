@@ -19,6 +19,7 @@
 #include "lib/hash.h"
 #include "lib/sset.h"
 #include "lib/util.h"
+#include "lib/uuid.h"
 #include "openvswitch/vlog.h"
 #include "ovn/lib/ovn-sb-idl.h"
 #include "vtep/vtep-idl.h"
@@ -42,10 +43,22 @@ binding_run(struct controller_gw_ctx *ctx)
         const struct sbrec_chassis *chassis_rec
             = get_chassis_by_name(ctx->ovnsb_idl, pswitch->name);
         const struct sbrec_binding *binding_rec;
+        struct sset ldps_in_gw;
         struct sset lports;
         const char *name;
         int i;
 
+        /* 'ldps_in_gw' is used to guarantee that each logical datapath
+         * can only have up to one logical port from each 'vlan_map'.
+         *
+         * If a lport in 'vlan_map' is first added to a logical datapath,
+         * we add a string which consists of
+         * 'pswitch_name+port_name+logical_datapath_uuid'.  Then for each
+         * lport, we always first check if there is already a lport in
+         * the same 'vlan_map' attached to the same logical datapath,
+         * which is not allowed!
+         * */
+        sset_init(&ldps_in_gw);
         sset_init(&lports);
         /* Collects all logical ports of the gateway. */
         for (i = 0; i < chassis_rec->n_gateway_ports; i++) {
@@ -59,15 +72,41 @@ binding_run(struct controller_gw_ctx *ctx)
 
         SBREC_BINDING_FOR_EACH(binding_rec, ctx->ovnsb_idl) {
             if (sset_find_and_delete(&lports, binding_rec->logical_port)) {
-                if (binding_rec->chassis == chassis_rec) {
-                    continue;
+                char *lp_ldp;
+                int chunk;
+
+                /* Gets the length of 'pswitch_port' from lport format.
+                 * lport is formated as 'pswitch_port_vlanNum'. */
+                chunk = strrchr(binding_rec->logical_port, '_')
+                    - binding_rec->logical_port;
+                /* Constructs string "pswitch_port_logical_datapath". */
+                lp_ldp = xasprintf("%.*s_"UUID_FMT,
+                                   chunk, binding_rec->logical_port,
+                                   UUID_ARGS(&binding_rec->logical_datapath));
+                if (sset_find(&ldps_in_gw, lp_ldp)) {
+                    VLOG_WARN("Logical datapath ("UUID_FMT") already has "
+                              "logical port from the chassis_port "
+                              "(%.*s) attached to it, so clear the "
+                              "chassis column from binding (%s)",
+                              UUID_ARGS(&binding_rec->logical_datapath),
+                              chunk, binding_rec->logical_port,
+                              binding_rec->logical_port);
+                    sbrec_binding_set_chassis(binding_rec, NULL);
+                } else {
+                    if (binding_rec->chassis != chassis_rec) {
+                        if (binding_rec->chassis) {
+                            VLOG_DBG("Changing chassis for lport (%s) from "
+                                     "(%s) to (%s)",
+                                     binding_rec->logical_port,
+                                     binding_rec->chassis->name,
+                                     chassis_rec->name);
+                        }
+                        sbrec_binding_set_chassis(binding_rec, chassis_rec);
+                    }
+                    /* Records the attachment in 'ldps_in_gw'. */
+                    sset_add(&ldps_in_gw, lp_ldp);
                 }
-                if (binding_rec->chassis) {
-                    VLOG_INFO("Changing chassis for lport %s from %s to %s",
-                              binding_rec->logical_port, binding_rec->chassis->name,
-                              chassis_rec->name);
-                }
-                sbrec_binding_set_chassis(binding_rec, chassis_rec);
+                free(lp_ldp);
             } else if (binding_rec->chassis == chassis_rec) {
                 sbrec_binding_set_chassis(binding_rec, NULL);
             }
@@ -75,6 +114,7 @@ binding_run(struct controller_gw_ctx *ctx)
         SSET_FOR_EACH (name, &lports) {
             VLOG_DBG("No binding record for lport %s", name);
         }
+        sset_destroy(&ldps_in_gw);
         sset_destroy(&lports);
     }
 

@@ -161,19 +161,32 @@ AT_SETUP([ovn-controller-gw - test binding])
 OVN_CONTROLLER_GW_START
 
 # adds vlan_bindings to physical ports.
-AT_CHECK([vtep-ctl add-ls lswitch -- bind-ls br-vtep p0 100 lswitch -- bind-ls br-vtep p0 200 lswitch -- bind-ls br-vtep p1 300 lswitch])
+AT_CHECK([vtep-ctl add-ls lswitch -- bind-ls br-vtep p0 100 lswitch -- bind-ls br-vtep p1 300 lswitch])
 # adds lport in ovn-nb db.
-for lport_name in br-vtep_p0_100 br-vtep_p0_200 br-vtep_p1_300; do
+for lport_name in br-vtep_p0_100 br-vtep_p1_300; do
     AT_CHECK_UNQUOTED([ovn-nbctl lport-add br-test ${lport_name}])
 done
 OVS_WAIT_UNTIL([test -n "`ovn-sbctl list Binding  | grep br-vtep_p1_300`"])
 
 chassis_uuid=$(ovn-sbctl --columns=_uuid list Chassis br-vtep | cut -d ':' -f2 | tr -d ' ')
-for lport_name in br-vtep_p0_100 br-vtep_p0_200 br-vtep_p1_300; do
+for lport_name in br-vtep_p0_100 br-vtep_p1_300; do
     AT_CHECK_UNQUOTED([ovn-sbctl --columns=chassis list Binding ${lport_name} | cut -d ':' -f2 | tr -d ' '], [0], [dnl
 ${chassis_uuid}
 ])
 done
+
+# adds br-vtep_p0_200 to lswitch, which is disallowed, since br-vtep_p0_100 has already attached to lswitch.
+AT_CHECK([vtep-ctl bind-ls br-vtep p0 200 lswitch])
+AT_CHECK([ovn-nbctl lport-add br-test br-vtep_p0_200])
+OVS_WAIT_UNTIL([test -n "`ovn-sbctl list Binding  | grep br-vtep_p0_200`"])
+AT_CHECK([sed -n 's/^.*\(|WARN|.*\)$/\1/p' ovn-controller-gw.log | sed 's/([[-_0-9a-z]][[-_0-9a-z]]*)/()/g'], [0], [dnl
+|WARN|Logical datapath () already has logical port from the chassis_port () attached to it, so clear the chassis column from binding ()
+])
+# chassis column should be empty, since disallow this.
+cleared_lport=$(sed -n 's/^.*|WARN|.*(\(.*\))$/\1/p' ovn-controller-gw.log)
+AT_CHECK_UNQUOTED([ovn-sbctl --columns=chassis list Binding ${cleared_lport} | cut -d ':' -f2 | tr -d ' '], [0], [dnl
+[[]]
+])
 
 # deletes physical ports from vtep.
 AT_CHECK([ovs-vsctl del-port p0 -- del-port p1])
@@ -186,7 +199,7 @@ for lport_name in br-vtep_p0_100 br-vtep_p0_200 br-vtep_p1_300; do
 ])
 done
 
-OVN_CONTROLLER_GW_STOP
+OVN_CONTROLLER_GW_STOP(["/already has logical port from the chassis_port/d"])
 AT_CLEANUP
 
 
