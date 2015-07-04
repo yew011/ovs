@@ -4,6 +4,8 @@ ovn_controller_vtep_ovn_controller_vtep_SOURCES = \
 	ovn/controller-vtep/binding.h \
 	ovn/controller-vtep/gateway.c \
 	ovn/controller-vtep/gateway.h \
+	ovn/controller-vtep/pipeline.c \
+	ovn/controller-vtep/pipeline.h \
 	ovn/controller-vtep/ovn-controller-vtep.c \
 	ovn/controller-vtep/ovn-controller-vtep.h
 ovn_controller_vtep_ovn_controller_vtep_LDADD = ovn/lib/libovn.la lib/libopenvswitch.la vtep/libvtep.la
