@@ -38,6 +38,7 @@
 #include "unixctl.h"
 #include "util.h"
 
+#include "gateway.h"
 #include "ovn-controller-vtep.h"
 
 VLOG_DEFINE_THIS_MODULE(ovn_vtep);
@@ -121,6 +122,7 @@ main(int argc, char *argv[])
             break;
         }
 
+        gateway_run(&ctx);
         unixctl_server_run(unixctl);
 
         unixctl_server_wait(unixctl);
@@ -134,6 +136,7 @@ main(int argc, char *argv[])
     }
 
     unixctl_server_destroy(unixctl);
+    gateway_destroy(&ctx);
 
     ovsdb_idl_destroy(ctx.vtep_idl);
     ovsdb_idl_destroy(ctx.ovnsb_idl);
