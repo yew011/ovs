@@ -75,6 +75,7 @@ EXTRA_DIST += \
 	ovn/CONTAINERS.OpenStack.md
 
 include ovn/controller/automake.mk
+include ovn/controller-vtep/automake.mk
 include ovn/lib/automake.mk
 include ovn/northd/automake.mk
 include ovn/utilities/automake.mk

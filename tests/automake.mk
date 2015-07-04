@@ -84,8 +84,8 @@ TESTSUITE_AT = \
 	tests/vtep-ctl.at \
 	tests/auto-attach.at \
 	tests/ovn.at \
-	tests/ovn-sbctl.at
-
+	tests/ovn-sbctl.at \
+	tests/ovn-controller-vtep.at
 KMOD_TESTSUITE_AT = \
 	tests/kmod-testsuite.at \
 	tests/kmod-macros.at \
@@ -96,7 +96,7 @@ TESTSUITE_PATCH = $(srcdir)/tests/testsuite.patch
 KMOD_TESTSUITE = $(srcdir)/tests/kmod-testsuite
 DISTCLEANFILES += tests/atconfig tests/atlocal
 
-AUTOTEST_PATH = utilities:vswitchd:ovsdb:vtep:tests:$(PTHREAD_WIN32_DIR_DLL):ovn:ovn/northd:ovn/utilities
+AUTOTEST_PATH = utilities:vswitchd:ovsdb:vtep:tests:$(PTHREAD_WIN32_DIR_DLL):ovn:ovn/controller-vtep:ovn/northd:ovn/utilities
 
 check-local: tests/atconfig tests/atlocal $(TESTSUITE)
 	$(SHELL) '$(TESTSUITE)' -C tests AUTOTEST_PATH=$(AUTOTEST_PATH) $(TESTSUITEFLAGS)
