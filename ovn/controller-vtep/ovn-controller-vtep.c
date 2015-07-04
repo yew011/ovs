@@ -38,6 +38,7 @@
 #include "unixctl.h"
 #include "util.h"
 
+#include "binding.h"
 #include "gateway.h"
 #include "ovn-controller-vtep.h"
 
@@ -123,6 +124,7 @@ main(int argc, char *argv[])
         }
 
         gateway_run(&ctx);
+        binding_run(&ctx);
         unixctl_server_run(unixctl);
 
         unixctl_server_wait(unixctl);
@@ -137,6 +139,7 @@ main(int argc, char *argv[])
 
     unixctl_server_destroy(unixctl);
     gateway_destroy(&ctx);
+    binding_destroy(&ctx);
 
     ovsdb_idl_destroy(ctx.vtep_idl);
     ovsdb_idl_destroy(ctx.ovnsb_idl);
