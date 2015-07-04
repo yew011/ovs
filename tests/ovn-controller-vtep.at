@@ -150,3 +150,51 @@ AT_CHECK([ovn-sbctl --columns=logical_switches list Chassis | cut -d ':' -f2 | t
 
 OVN_CONTROLLER_VTEP_STOP(["/Chassis for VTEP physical switch (br-vtep) disappears/d"])
 AT_CLEANUP
+
+
+# Tests binding updates.
+AT_SETUP([ovn-controller-vtep - test binding])
+OVN_CONTROLLER_VTEP_START
+
+# adds logical switch 'lswitch0' and vlan_bindings.
+AT_CHECK([vtep-ctl add-ls lswitch0 -- bind-ls br-vtep p0 100 lswitch0 -- bind-ls br-vtep p1 300 lswitch0])
+# adds lport in ovn-nb db.
+AT_CHECK_UNQUOTED([ovn-nbctl lport-add br-test br-vtep_lswitch0])
+OVS_WAIT_UNTIL([test -n "`ovn-sbctl list Binding  | grep br-vtep_lswitch0`"])
+# should see one binding.
+chassis_uuid=$(ovn-sbctl --columns=_uuid list Chassis br-vtep | cut -d ':' -f2 | tr -d ' ')
+AT_CHECK_UNQUOTED([ovn-sbctl --columns=chassis list Binding br-vtep_lswitch0 | cut -d ':' -f2 | tr -d ' '], [0], [dnl
+${chassis_uuid}
+])
+
+# adds another logical switch 'lswitch1' and vlan_bindings.
+AT_CHECK([vtep-ctl add-ls lswitch1 -- bind-ls br-vtep p0 200 lswitch1])
+# adds lport in ovn-nb db to the same logical switch.
+AT_CHECK_UNQUOTED([ovn-nbctl lport-add br-test br-vtep_lswitch1])
+OVS_WAIT_UNTIL([test -n "`ovn-sbctl list Binding | grep -- br-vtep_lswitch1`"])
+# should still see one binding, since it is not allowed to have more than
+# one logical port from same chassis attached to the same logical datapath
+# (logical switch in ovn-nb database).
+AT_CHECK_UNQUOTED([ovn-sbctl --columns=chassis list Binding | cut -d ':' -f2 | tr -d ' ' | sort -d], [0], [dnl
+
+[[]]
+${chassis_uuid}
+])
+# confirms the warning log.
+AT_CHECK([sed -n 's/^.*\(|WARN|.*\)$/\1/p' ovn-controller-vtep.log | sed 's/([[-_0-9a-z]][[-_0-9a-z]]*)/()/g' | uniq], [0], [dnl
+|WARN|Logical datapath () already has logical port from the same chassis () attached to it, so clear the chassis column from binding ()
+])
+
+# deletes physical ports from vtep.
+AT_CHECK([ovs-vsctl del-port p0 -- del-port p1])
+AT_CHECK([vtep-ctl del-port br-vtep p0 -- del-port br-vtep p1])
+OVS_WAIT_UNTIL([test -z "`ovn-sbctl list Chassis | grep -- br-vtep_lswitch`"])
+# should see empty chassis column in both binding entries.
+AT_CHECK_UNQUOTED([ovn-sbctl --columns=chassis list Binding | cut -d ':' -f2 | tr -d ' ' | sort], [0], [dnl
+
+[[]]
+[[]]
+])
+
+OVN_CONTROLLER_VTEP_STOP(["/already has logical port from the same chassis/d"])
+AT_CLEANUP
