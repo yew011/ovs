@@ -24,4 +24,22 @@ struct controller_vtep_ctx {
     struct ovsdb_idl *vtep_idl;
 };
 
+/* VTEP needs what VTEP needs. */
+#define OVN_SB_ENCAP_TYPE "vxlan"
+#define VTEP_ENCAP_TYPE "vxlan_over_ipv4"
+
+static inline const struct sbrec_chassis *
+get_chassis_by_name(struct ovsdb_idl *ovnsb_idl, char *chassis_id)
+{
+    const struct sbrec_chassis *chassis_rec;
+
+    SBREC_CHASSIS_FOR_EACH(chassis_rec, ovnsb_idl) {
+        if (!strcmp(chassis_rec->name, chassis_id)) {
+            break;
+        }
+    }
+
+    return chassis_rec;
+}
+
 #endif /* ovn/ovn-controller-vtep.h */
