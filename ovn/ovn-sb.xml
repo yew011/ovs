@@ -141,15 +141,18 @@
     <group title="Gateway Configuration">
       <p>
         A <dfn>gateway</dfn> is a chassis that forwards traffic between a
-        logical network and a physical VLAN.  Gateways are typically dedicated
-        nodes that do not host VMs.
+        logical network and a physical VLAN.  Physical VLANs belonging to
+        the one logical network form a <dfn>logical switch</dfn> in the
+        <dfn>gateway</dfn>.  Gateways are typically dedicated nodes that
+        do not host VMs.
       </p>
 
-      <column name="gateway_ports">
-        Maps from the name of a port attached to the OVN integration bridge
-        (typically a physical port or an Open vSwitch patch port) to a <ref
-        table="Gateway"/> record that describes the details of the gatewaying
-        function.
+      <column name="logical_switches">
+        Maps from the name of a logical switch on the gateway to a logical
+        port name.  To guarantee uniqueness, the logical port name is
+        formatted as the combination of <dfn>{Chassis_Name}_
+        {Logical_Switch_Name}</dfn>.  User needs to create a same named
+        logical port in the OVN_Northbound database's Logical_Port table.
       </column>
     </group>
   </table>
@@ -178,23 +181,6 @@
 
     <column name="ip">
       The IPv4 address of the encapsulation tunnel endpoint.
-    </column>
-  </table>
-
-  <table name="Gateway" title="Physical Network Gateway Ports">
-    <p>
-      The <ref column="gateway_ports" table="Chassis"/> column in the <ref
-      table="Chassis"/> table refers to rows in this table to connect a chassis
-      port to a gateway function.  Each row in this table describes the logical
-      networks to which a gateway port is attached.  Each chassis, via
-      <code>ovn-controller</code>(8), adds and updates its own rows, if any
-      (since most chassis are not gateways), and keeps a copy of the remaining
-      rows to determine how to reach other chassis.
-    </p>
-
-    <column name="vlan_map">
-      Maps from a VLAN ID to a logical port name.  Thus, each named logical
-      port corresponds to one VLAN on the gateway port.
     </column>
   </table>
 
