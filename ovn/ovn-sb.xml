@@ -172,7 +172,13 @@
 
       <column name="vtep_logical_switches">
         Stores all vtep logical switch names connected by this gateway
-        chassis.
+        chassis.  The <ref table="Port_Binding"/> table entry with
+        <ref column="options" table="Port_Binding"/>:vtep_physical_switch
+        equal <ref table="Chassis"/> <ref column="name" table="Chassis"/>,
+        and <ref column="options" table="Port_Binding"/>:vtep_logical_switch
+        value in <ref table="Chassis"/>
+        <ref column="vtep_logical_switches" table="Chassis"/>, will be
+        associated with this <ref table="Chassis"/>.
       </column>
      </group>
   </table>
@@ -894,18 +900,39 @@
     <column name="type">
       <p>
       A type for this logical port.  Logical ports can be used to model
-      other types of connectivity into an OVN logical switch.  Leaving this column
-      blank maintains the default logical port behavior.
+      other types of connectivity into an OVN logical switch.  Leaving this
+      column blank maintains the default logical port behavior, which
+      is for a VM (or VIF) interface.  Besides, the following types are
+      defined:
       </p>
 
-      <p>
-      There are no other logical port types implemented yet.
-      </p>
+      <dl>
+        <dt><code>vtep</code></dt>
+        <dd>A port to a logical switch on a VTEP gateway chassis.  In order
+        to get this port correctly recognized by the ovn controller, the
+        <ref column="options" table="Port_Binding"/>:vtep_physical_switch
+        and <ref column="options" table="Port_Binding"/>:vtep_logical_switch
+        must also be defined.</dd>
+      </dl>
     </column>
 
     <column name="options">
+      <p>
         This column provides key/value settings specific to the logical port
-        <ref column="type"/>.
+        <ref column="type"/>.  The following options are defined:
+      </p>
+
+      <dl>
+        <dt><code>vtep_physical_switch</code></dt>
+        <dd>The <ref column="name" table="Chassis"/> of the VTEP gateway
+        chassis.</dd>
+      </dl>
+
+      <dl>
+        <dt><code>vtep_logical_switch</code></dt>
+        <dd>A logical switch name in VTEP gateway chassis's
+        <ref column="vtep_logical_switches" table="Chassis"/>.</dd>
+      </dl>
     </column>
 
     <column name="tunnel_key">

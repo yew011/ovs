@@ -111,18 +111,37 @@
     <column name="type">
       <p>
       Specify a type for this logical port.  Logical ports can be used to model
-      other types of connectivity into an OVN logical switch.  Leaving this column
-      blank maintains the default logical port behavior.
+      other types of connectivity into an OVN logical switch.  Leaving this
+      column blank maintains the default logical port behavior, which is
+      for a VM (or VIF) interface.  Besides, the following types are
+      defined:
       </p>
 
-      <p>
-      There are no other logical port types implemented yet.
-      </p>
+      <dl>
+        <dt><code>vtep</code></dt>
+        <dd>A port to a logical switch on a VTEP gateway.  In order
+        to get this port correctly recognized by the ovn controller, the
+        <ref column="options" table="Logical_Port"/>:vtep_physical_switch
+        and <ref column="options" table="Logical_Port"/>:vtep_logical_switch
+        must also be defined.</dd>
+      </dl>
     </column>
 
     <column name="options">
+      <p>
         This column provides key/value settings specific to the logical port
-        <ref column="type"/>.
+        <ref column="type"/>.  The following options are defined:
+      </p>
+
+      <dl>
+        <dt><code>vtep_physical_switch</code></dt>
+        <dd>The name of the VTEP gateway.</dd>
+      </dl>
+
+      <dl>
+        <dt><code>vtep_logical_switch</code></dt>
+        <dd>A logical switch name connected by the VTEP gateway.</dd>
+      </dl>
     </column>
 
     <column name="parent_name">
