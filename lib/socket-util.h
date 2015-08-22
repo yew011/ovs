@@ -81,6 +81,7 @@ void xpipe_nonblocking(int fds[2]);
 
 int drain_rcvbuf(int fd);
 
+void unix_socket_set_file_group(const char *path, const char *group);
 int make_unix_socket(int style, bool nonblock,
                      const char *bind_path, const char *connect_path);
 int get_unix_name_len(socklen_t sun_len);
@@ -95,6 +96,12 @@ int af_inet_ifreq_ioctl(const char *name, struct ifreq *,
 #endif
 
 #ifdef _WIN32
+static inline void unix_socket_set_file_group(const char *path,
+                                              const char *group)
+{
+    return;
+}
+
 static inline int make_unix_socket(int style, bool nonblock,
                                    const char *bind_path,
                                    const char *connect_path)

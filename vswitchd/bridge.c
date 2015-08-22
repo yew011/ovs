@@ -3507,6 +3507,7 @@ bridge_configure_remotes(struct bridge *br,
 
     enum ofproto_fail_mode fail_mode;
 
+    const char **punix_file_groups;
     struct ofproto_controller *ocs;
     size_t n_ocs;
     size_t i;
@@ -3528,9 +3529,12 @@ bridge_configure_remotes(struct bridge *br,
 
     n_controllers = bridge_get_controllers(br, &controllers);
 
+    punix_file_groups =
+        xmalloc((n_controllers + 1) * sizeof *punix_file_groups);
     ocs = xmalloc((n_controllers + 1) * sizeof *ocs);
     n_ocs = 0;
 
+    punix_file_groups[n_ocs] = NULL;
     bridge_ofproto_controller_for_mgmt(br, &ocs[n_ocs++]);
     for (i = 0; i < n_controllers; i++) {
         struct ovsrec_controller *c = controllers[i];
@@ -3584,6 +3588,8 @@ bridge_configure_remotes(struct bridge *br,
 
         bridge_configure_local_iface_netdev(br, c);
         bridge_ofproto_controller_from_ovsrec(c, &ocs[n_ocs]);
+        punix_file_groups[n_ocs] = smap_get(&c->other_config,
+                                            "punix_file_group");
         if (disable_in_band) {
             ocs[n_ocs].band = OFPROTO_OUT_OF_BAND;
         }
@@ -3592,6 +3598,17 @@ bridge_configure_remotes(struct bridge *br,
 
     ofproto_set_controllers(br->ofproto, ocs, n_ocs,
                             bridge_get_allowed_versions(br));
+
+    for (i = 0; i < n_ocs; i++) {
+        if (!strncmp(ocs[i].target, "punix:", 6)) {
+            const char *path = ocs[i].target + 6;
+            const char *group = punix_file_groups[i];
+
+            unix_socket_set_file_group(path, group);
+        }
+    }
+
+    free(punix_file_groups);
     free(ocs[0].target); /* From bridge_ofproto_controller_for_mgmt(). */
     free(ocs);
 

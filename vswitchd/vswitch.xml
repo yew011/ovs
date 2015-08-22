@@ -3989,6 +3989,22 @@
         a default value of 48 is chosen.  Valid DSCP values must be in the
         range 0 to 63.
       </column>
+
+      <column name="other_config" key="punix_file_group"
+                type='{"type": "string"}'>
+        <p>
+          When connection method in <ref column="target"/> is
+          <code>punix</code>, this config specifies the user group to which
+          the group ownership for 'punix' (unix domain socket) file created
+          by ovs will be applied.  Also, the file's access permission will be
+          changed to '0770'.
+        </p>
+        <p>
+          By default, the 'punix' file is associated with the 'root'
+          group and have access permission '0700'.  If this config is
+          not specified or specified as 'root', the default is restored.
+        </p>
+      </column>
     </group>
 
 

@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <net/if.h>
+#include <grp.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -48,6 +49,75 @@ VLOG_DEFINE_THIS_MODULE(socket_util_unix);
 /* Maximum length of the sun_path member in a struct sockaddr_un, excluding
  * space for a null terminator. */
 #define MAX_UN_LEN (sizeof(((struct sockaddr_un *) 0)->sun_path) - 1)
+
+/* Given 'group_name', returns true if the corresponding 'group'
+ * is found and saves the group id into 'gid'.  Returns false if
+ * cannot find 'group'. */
+static bool
+query_group_gid(const char *group_name, gid_t *gid)
+{
+    struct group group;
+    struct group *result;
+    size_t buflen;
+    char *buf;
+
+    if (!group_name) {
+        return false;
+    }
+
+    buflen = sysconf(_SC_GETGR_R_SIZE_MAX);
+    buf = xmalloc(buflen * sizeof *buf);
+    getgrnam_r(group_name, &group, buf, buflen, &result);
+
+    if (!result) {
+        VLOG_ERR("cannot retrieve group info for specified group "
+                 "(%s) : %s",
+                 group_name,
+                 errno ? ovs_strerror(errno) : "group not found");
+    } else {
+        *gid = result->gr_gid;
+    }
+    free(buf);
+
+    return result;
+}
+
+/* Sets the unix domain socket file's group ownership to 'group'. */
+void
+unix_socket_set_file_group(const char *path, const char *group)
+{
+    struct stat info;
+    gid_t gid = 0;
+
+    if (stat(path, &info)) {
+        VLOG_WARN("set (%s) group fails : cannot find file (%s)",
+                  path, path);
+        return;
+    }
+
+    if (!query_group_gid(group ? group : "root", &gid)) {
+        VLOG_WARN("set (%s) group fails : cannot find group (%s)",
+                  path, group ? group : "root");
+        return;
+    }
+
+    /* Returns if current group id is same as desired group id. */
+    if (gid == info.st_gid) {
+        return;
+    } else {
+        /* Changes group ownership to 'gid'. */
+        if (chown(path, -1, gid)) {
+            VLOG_WARN("chown (%s) group to (%s) fails: %s",
+                      path, group ? group : "root", ovs_strerror(errno));
+            return;
+        }
+        if (chmod(path, 0770)) {
+            VLOG_WARN("chmod (%s) permission to 0700 fails: %s",
+                      path, ovs_strerror(errno));
+            return;
+        }
+    }
+}
 
 void
 xpipe(int fds[2])
