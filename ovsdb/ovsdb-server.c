@@ -770,6 +770,8 @@ add_manager_options(struct shash *remotes, const struct ovsdb_row *row)
             options->dscp = dscp;
         }
     }
+    options->punix_file_group = read_map_string_column(row, "other_config",
+                                                       "punix_file_group");
 }
 
 static void

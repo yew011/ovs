@@ -35,6 +35,7 @@ struct ovsdb_jsonrpc_options {
     int max_backoff;            /* Maximum reconnection backoff, in msec. */
     int probe_interval;         /* Max idle time before probing, in msec. */
     int dscp;                   /* Dscp value for manager connections */
+    const char *punix_file_group; /* For setting the punix file's group. */
 };
 struct ovsdb_jsonrpc_options *
 ovsdb_jsonrpc_default_options(const char *target);

@@ -32,6 +32,7 @@
 #include "row.h"
 #include "server.h"
 #include "simap.h"
+#include "socket-util.h"
 #include "stream.h"
 #include "table.h"
 #include "timeval.h"
@@ -227,6 +228,11 @@ ovsdb_jsonrpc_server_set_remotes(struct ovsdb_jsonrpc_server *svr,
         }
 
         ovsdb_jsonrpc_session_set_all_options(remote, options);
+
+        if (!strncmp(node->name, "punix:", 6)) {
+            unix_socket_set_file_group(node->name + 6,
+                                       options->punix_file_group);
+        }
     }
 }
 
