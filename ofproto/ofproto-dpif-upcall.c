@@ -316,6 +316,7 @@ static int upcall_receive(struct upcall *, const struct dpif_backer *,
 static void upcall_uninit(struct upcall *);
 
 static upcall_callback upcall_cb;
+static dp_purge_callback dp_purge_cb;
 
 static atomic_bool enable_megaflows = ATOMIC_VAR_INIT(true);
 static atomic_bool enable_ufid = ATOMIC_VAR_INIT(true);
@@ -368,6 +369,7 @@ udpif_create(struct dpif_backer *backer, struct dpif *dpif)
     }
 
     dpif_register_upcall_cb(dpif, upcall_cb, udpif);
+    dpif_register_dp_purge_cb(dpif, dp_purge_cb, udpif);
 
     return udpif;
 }
@@ -2189,6 +2191,40 @@ static void
 revalidator_purge(struct revalidator *revalidator)
 {
     revalidator_sweep__(revalidator, true);
+}
+
+/* In reaction to dpif purge, purges all 'ukey's with same 'pmd_id'. */
+static void
+dp_purge_cb(void *aux, unsigned pmd_id)
+{
+    struct udpif *udpif = aux;
+    size_t i;
+
+    for (i = 0; i < N_UMAPS; i++) {
+        uint64_t odp_actions_stub[1024 / 8];
+        struct ofpbuf odp_actions = OFPBUF_STUB_INITIALIZER(odp_actions_stub);
+        struct ukey_op ops[REVALIDATE_MAX_BATCH];
+        struct udpif_key *ukey;
+        struct umap *umap = &udpif->ukeys[i];
+        size_t n_ops = 0;
+
+        CMAP_FOR_EACH(ukey, cmap_node, &umap->cmap) {
+             if (ukey->pmd_id == pmd_id) {
+                delete_op_init(udpif, &ops[n_ops++], ukey);
+                if (n_ops == REVALIDATE_MAX_BATCH) {
+                    push_ukey_ops(udpif, umap, ops, n_ops);
+                    n_ops = 0;
+                }
+            }
+        }
+
+        if (n_ops) {
+            push_ukey_ops(udpif, umap, ops, n_ops);
+        }
+
+        ofpbuf_uninit(&odp_actions);
+        ovsrcu_quiesce();
+    }
 }
 
 static void
